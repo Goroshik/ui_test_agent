@@ -1,3 +1,5 @@
 node_modules/
 .env
-visual-bot/screenshots/
+visual-bot/screenshots/*.png
+visual-bot/screenshots/*.jpg
+visual-bot/screenshots/*.jpeg
