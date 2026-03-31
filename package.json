@@ -1,0 +1,15 @@
+{
+  "name": "visual-bot",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Terminal AI agent that controls a browser via Playwright MCP",
+  "main": "visual-bot/index.js",
+  "scripts": {
+    "start": "node visual-bot/index.js"
+  },
+  "dependencies": {
+    "@playwright/mcp": "^0.0.29",
+    "dotenv": "^16.4.5",
+    "openai": "^4.77.0"
+  }
+}
