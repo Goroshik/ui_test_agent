@@ -45,14 +45,27 @@ node index.js "search for 'playwright' on npmjs.com and open the first result"
 node index.js "go to news.ycombinator.com and list the top 5 stories"
 ```
 
-Screenshots are saved to `./screenshots/` with sequential numbering:
+Screenshots are first saved to `./screenshots/incoming/` with sequential numbering.
+After the main browser run finishes, a separate post-run visual agent compares
+incoming screenshots against `./screenshots/baseline/` via LM Studio:
+
+- if baseline does not exist: screenshot is saved as baseline
+- if no visual changes: new screenshot is deleted
+- if changed: both images + text report are saved to `./screenshots/changes/`
+
+File layout:
 
 ```
 screenshots/
-  001-navigate-github.com.png
-  002-screenshot.png
-  003-click-sign_in.png
-  ...
+  incoming/
+    001-navigate-github.com_20260331-121500.png
+  baseline/
+    navigate-github.com.png
+  changes/
+    20260331-121530-navigate-github.com/
+      old.png
+      new.png
+      changes.txt
 ```
 
 ## Environment variables
