@@ -1,8 +1,9 @@
 import OpenAI from 'openai';
 import { MCPClient } from '../../mcp-client.js';
 import { Screenshotter } from '../../screenshotter.js';
-import { PostRunCompareAgent } from '../post-run/post-run-snapshot-compare-agent.js';
 import { resolveModel } from '../../utils.js';
+import { recordVisit, getVisitSummary } from '../../memory.js';
+import { getDomContextSummary } from '../../dom-memory.js';
 
 // Playwright MCP doesn't expose inputSchema via protocol — define them manually
 const TOOL_SCHEMAS: Record<string, OpenAI.FunctionParameters> = {
@@ -31,6 +32,8 @@ const TOOL_SCHEMAS: Record<string, OpenAI.FunctionParameters> = {
 };
 
 const SYSTEM_PROMPT = `You are a browser automation agent. Complete the user's task step by step using the available browser tools.
+
+IMPORTANT: Always respond in Russian. All your messages, summaries, and explanations must be in Russian.
 
 ## How to interact with page elements
 
@@ -65,16 +68,26 @@ browser_wait_for({ time: 2 })                // wait N seconds
 - When the task is fully complete, stop calling tools and write a concise summary
 - If an action fails, take a new snapshot and try again with the correct ref`;
 
+// Tools that can reveal hidden UI without changing the URL
+const INTERACTION_TOOLS = new Set([
+  'browser_click',
+  'browser_hover',
+  'browser_press_key',
+  'browser_select_option',
+]);
+
 export class Agent {
   private client: OpenAI;
   private model: string | null = null;
   private mcp: MCPClient;
   private screenshotter: Screenshotter;
   private stepCount = 0;
-  private lastSnapshotSignature: string | null = null;
+  private lastPageUrl: string | null = null;
+  // Snapshot text at the moment of the last screenshot — used to detect UI state changes
+  private lastCapturedSnapshot: string | null = null;
 
-  constructor() {
-    this.client = new OpenAI({
+  constructor(client?: OpenAI) {
+    this.client = client ?? new OpenAI({
       baseURL: process.env.LM_STUDIO_BASE_URL || 'http://localhost:1234/v1',
       apiKey: process.env.LM_STUDIO_API_KEY || 'lm-studio',
     });
@@ -95,7 +108,10 @@ export class Agent {
       console.log('Tools:', tools.map((t) => t.name).join(', '));
     }
 
-    await this.screenshotter.init();
+    const visualDisabled = process.env.VISUAL_DISABLED === 'true';
+    if (!visualDisabled) {
+      await this.screenshotter.init();
+    }
 
     // Convert MCP tool schemas to OpenAI function format
     // Use hardcoded schemas since @playwright/mcp doesn't expose them via protocol
@@ -108,12 +124,18 @@ export class Agent {
       },
     }));
 
+    const visitSummary = await getVisitSummary();
+    const domContext = await getDomContextSummary();
+
+    const extras = [visitSummary, domContext].filter(Boolean).join('\n\n');
+    const systemContent = extras ? `${SYSTEM_PROMPT}\n\n${extras}` : SYSTEM_PROMPT;
+
     const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
-      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'system', content: systemContent },
       { role: 'user', content: prompt },
     ];
 
-    const maxIterations = parseInt(process.env.MAX_ITERATIONS || '30', 10);
+    const maxIterations = parseInt(process.env.MAX_ITERATIONS || '60', 10);
 
     for (let iteration = 1; iteration <= maxIterations; iteration++) {
       console.log(`\n[Step ${iteration}] Thinking...`);
@@ -169,17 +191,25 @@ export class Agent {
           console.log(`    Result: ${content.slice(0, 300)}${content.length > 300 ? '…' : ''}`);
         }
 
-        let screenshotBase64: string | null = null;
-        if (toolName === 'browser_snapshot') {
-          screenshotBase64 = await this._processSnapshotAndMaybeCapture(toolName, toolArgs, content);
-        } else {
-          const freshSnapshot = await this.mcp.snapshot();
-          const freshSnapshotText = this._extractTextContent(freshSnapshot);
-          if (freshSnapshotText) {
-            screenshotBase64 = await this._processSnapshotAndMaybeCapture(toolName, toolArgs, freshSnapshotText);
-          } else {
-            console.log('    Snapshot: failed to fetch after action');
+        // Screenshot on URL change or significant UI state change after an interaction
+        let screenshotResult: { base64: string; mime: string; path: string } | null = null;
+        if (!visualDisabled) {
+          const snapshotText =
+            toolName === 'browser_snapshot'
+              ? content
+              : this._extractTextContent(await this.mcp.snapshot());
+
+          if (snapshotText) {
+            const isInteraction = INTERACTION_TOOLS.has(toolName);
+            screenshotResult = await this._captureIfPageChanged(toolName, toolArgs, snapshotText, isInteraction);
           }
+        }
+
+        // Record visit whenever the page URL changes (navigate tool or click-triggered redirect)
+        if (screenshotResult && this.lastPageUrl) {
+          await recordVisit(this.lastPageUrl);
+        } else if (toolName === 'browser_navigate' && typeof toolArgs.url === 'string') {
+          await recordVisit(toolArgs.url);
         }
 
         messages.push({
@@ -188,14 +218,14 @@ export class Agent {
           content: content || 'OK',
         });
 
-        // Send screenshot as follow-up user message so the model can see the page
-        if (screenshotBase64) {
+        // Send screenshot to LLM only when a new page was loaded
+        if (screenshotResult) {
           messages.push({
             role: 'user',
             content: [
               {
                 type: 'image_url',
-                image_url: { url: `data:image/png;base64,${screenshotBase64}` },
+                image_url: { url: `data:${screenshotResult.mime};base64,${screenshotResult.base64}` },
               },
             ],
           });
@@ -208,11 +238,6 @@ export class Agent {
     }
 
     this.mcp.disconnect();
-
-    if (this.model) {
-      const postRunAgent = new PostRunCompareAgent(this.client, this.model);
-      await postRunAgent.process();
-    }
   }
 
   private _extractTextContent(result: unknown): string {
@@ -237,15 +262,17 @@ export class Agent {
     return `{ ${entries} }`;
   }
 
-  private _snapshotSignature(snapshotText: string): string {
-    return snapshotText.replace(/\s+/g, ' ').trim();
+  private _extractPageUrl(snapshotText: string): string | null {
+    const match = snapshotText.match(/Page URL:\s*(https?:\/\/[^\s'"]+)/i);
+    return match?.[1] ?? null;
   }
 
-  private async _processSnapshotAndMaybeCapture(
+  private async _captureIfPageChanged(
     sourceToolName: string,
     sourceToolArgs: Record<string, unknown>,
-    snapshotText: string
-  ): Promise<string | null> {
+    snapshotText: string,
+    isInteraction: boolean
+  ): Promise<{ base64: string; mime: string; path: string } | null> {
     this.stepCount++;
     const snapshotPath = await this.screenshotter.saveSnapshot(
       this.stepCount,
@@ -262,42 +289,67 @@ export class Agent {
     );
     console.log(`    Snapshot: ${snapshotPath ?? `./screenshots/snapshots-incoming/${filename}`}`);
 
-    const nextSignature = this._snapshotSignature(snapshotText);
-    const isChanged = this.lastSnapshotSignature === null || this.lastSnapshotSignature !== nextSignature;
-    this.lastSnapshotSignature = nextSignature;
+    const currentUrl = this._extractPageUrl(snapshotText);
+    const urlChanged = currentUrl !== null && currentUrl !== this.lastPageUrl;
 
-    if (!isChanged) {
-      console.log('    Screenshot skipped: no page changes detected');
+    // Detect same-page UI state change: dropdown opened, hidden panel revealed, navbar updated, etc.
+    const uiStateChanged =
+      isInteraction && snapshotText !== this.lastCapturedSnapshot;
+
+    if (!urlChanged && !uiStateChanged) {
+      console.log(`    Screenshot skipped: page state unchanged (${currentUrl ?? 'URL unknown'})`);
       return null;
     }
 
+    if (urlChanged) {
+      this.lastPageUrl = currentUrl;
+      console.log(`    New page: ${currentUrl}`);
+    } else {
+      console.log(`    UI state changed on: ${currentUrl ?? 'current page'}`);
+    }
+
     this.stepCount++;
-    const screenshotResult = await this.mcp.screenshot();
-    if (!screenshotResult?.content) {
+    const raw = await this.mcp.screenshot();
+    if (!raw?.content) {
       console.log('    Screenshot: failed (null result)');
       return null;
     }
 
-    const imageContent = screenshotResult.content.find((c) => c.type === 'image' || c.type === 'image_url');
+    const imageContent = raw.content.find((c) => c.type === 'image' || c.type === 'image_url');
     const data = imageContent?.data ?? imageContent?.url;
     if (!data) {
-      console.log(`    Screenshot: no image data`, JSON.stringify(screenshotResult).slice(0, 200));
+      console.log('    Screenshot: no image data');
       return null;
     }
 
-    const base64 = data.startsWith('data:image/') ? data.split(',')[1] ?? '' : data;
+    let base64: string;
+    let mime: string;
+    if (data.startsWith('data:image/')) {
+      const [header, payload] = data.split(',');
+      mime   = header.replace('data:', '').replace(';base64', '');
+      base64 = payload ?? '';
+    } else {
+      // Raw base64 — detect format from magic bytes
+      const head = Buffer.from(data.slice(0, 16), 'base64');
+      mime   = (head[0] === 0xff && head[1] === 0xd8) ? 'image/jpeg' : 'image/png';
+      base64 = data;
+    }
+
     if (!base64) {
       console.log('    Screenshot: empty base64 payload');
       return null;
     }
 
-    const saved = await this.screenshotter.saveBase64(this.stepCount, sourceToolName, sourceToolArgs, base64);
+    const saved = await this.screenshotter.saveBase64(this.stepCount, sourceToolName, sourceToolArgs, base64, currentUrl);
     if (!saved) {
       console.log('    Screenshot: failed to save');
       return null;
     }
 
-    console.log(`    Screenshot saved (page changed): ${saved.path}`);
-    return base64;
+    // Update baseline — this snapshot is now what the last screenshot represents
+    this.lastCapturedSnapshot = snapshotText;
+
+    console.log(`    Screenshot saved: ${saved.path}`);
+    return { base64, mime, path: saved.path };
   }
 }

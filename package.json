@@ -6,6 +6,10 @@
   "main": "visual-bot/index.ts",
   "scripts": {
     "start": "tsx visual-bot/index.ts",
+    "analyze-memory": "tsx visual-bot/analyze-memory.ts",
+    "analyze-memory:force": "tsx visual-bot/analyze-memory.ts --force",
+    "analyze-dom-memory": "tsx visual-bot/analyze-dom-memory.ts",
+    "analyze-dom-memory:force": "tsx visual-bot/analyze-dom-memory.ts --force",
     "start:compare": "tsx visual-bot/snapshot-compare.ts",
     "start:compare:screenshots": "tsx visual-bot/snapshot-compare.ts",
     "start:compare:snapshots": "tsx visual-bot/snapshot-text-compare.ts",
@@ -17,10 +21,12 @@
   "dependencies": {
     "@playwright/mcp": "^0.0.29",
     "dotenv": "^16.4.5",
-    "openai": "^4.77.0"
+    "openai": "^4.77.0",
+    "sharp": "^0.34.5"
   },
   "devDependencies": {
     "@types/node": "^25.5.0",
+    "@types/sharp": "^0.31.1",
     "tsx": "^4.21.0",
     "typescript": "^6.0.2"
   }

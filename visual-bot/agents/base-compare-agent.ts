@@ -12,6 +12,8 @@ export abstract class BaseCompareAgent {
   protected abstract readonly BASELINE_DIR: string;
   protected abstract readonly CHANGES_DIR: string;
   protected abstract readonly ext: string;
+  /** Additional extensions accepted for incoming files (besides ext). Override in subclasses. */
+  protected readonly extraExts: string[] = [];
   protected abstract readonly label: string;
 
   protected abstract readContent(filePath: string): Promise<string>;
@@ -19,8 +21,9 @@ export abstract class BaseCompareAgent {
 
   async process(): Promise<void> {
     await this.ensureDirs();
+    const acceptedExts = [this.ext, ...this.extraExts];
     const files = (await readdir(this.INCOMING_DIR))
-      .filter((name) => name.toLowerCase().endsWith(this.ext))
+      .filter((name) => acceptedExts.some((e) => name.toLowerCase().endsWith(e)))
       .sort();
 
     if (files.length === 0) {
@@ -35,8 +38,10 @@ export abstract class BaseCompareAgent {
       const baselines = await this.listBaselines(key);
       const baselinePath = baselines.at(-1) ?? null;
 
+      const fileExt = this.fileExt(file);
+
       if (!baselinePath) {
-        const newBaselinePath = resolve(this.BASELINE_DIR, `${key}__${this.timestamp()}${this.ext}`);
+        const newBaselinePath = resolve(this.BASELINE_DIR, `${key}__${this.timestamp()}${fileExt}`);
         await rename(incomingPath, newBaselinePath);
         await this.pruneOldBaselines(key, this.baselineKeepCount);
         console.log(`  Baseline created: ${newBaselinePath}`);
@@ -57,16 +62,22 @@ export abstract class BaseCompareAgent {
       const diffDir = resolve(this.CHANGES_DIR, `${stamp}-${key}`);
       await mkdir(diffDir, { recursive: true });
 
-      await copyFile(baselinePath, resolve(diffDir, `old${this.ext}`));
-      await copyFile(incomingPath, resolve(diffDir, `new${this.ext}`));
+      const baselineExt = this.fileExt(baselinePath);
+      await copyFile(baselinePath, resolve(diffDir, `old${baselineExt}`));
+      await copyFile(incomingPath, resolve(diffDir, `new${fileExt}`));
       await writeFile(resolve(diffDir, 'changes.txt'), diff.summary || 'Change detected.', 'utf-8');
 
-      const newBaselinePath = resolve(this.BASELINE_DIR, `${key}__${stamp}${this.ext}`);
+      const newBaselinePath = resolve(this.BASELINE_DIR, `${key}__${stamp}${fileExt}`);
       await rename(incomingPath, newBaselinePath);
       await this.pruneOldBaselines(key, this.baselineKeepCount);
       await this.pruneOldChanges(key, this.changesKeepCount);
       console.log(`  Changed (${key}) -> saved diff: ${diffDir}`);
     }
+  }
+
+  protected fileExt(filename: string): string {
+    const m = filename.match(/(\.[^.]+)$/);
+    return m?.[1]?.toLowerCase() ?? this.ext;
   }
 
   protected extractKey(filename: string): string {
@@ -83,11 +94,10 @@ export abstract class BaseCompareAgent {
   protected async listBaselines(key: string): Promise<string[]> {
     const names = await readdir(this.BASELINE_DIR);
     const lKey = key.toLowerCase();
-    const candidates = names.filter(
-      (n) =>
-        n.toLowerCase() === `${lKey}${this.ext}` ||
-        n.toLowerCase().startsWith(`${lKey}__`)
-    );
+    const candidates = names.filter((n) => {
+      const low = n.toLowerCase();
+      return low.startsWith(`${lKey}__`) || low.replace(/\.[^.]+$/, '') === lKey;
+    });
 
     const withTime = await Promise.all(
       candidates.map(async (name) => {

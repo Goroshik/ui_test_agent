@@ -13,6 +13,7 @@ export class ScreenshotCompareAgent extends BaseCompareAgent {
   protected readonly BASELINE_DIR = resolve(SCREENSHOTS_DIR, 'baseline');
   protected readonly CHANGES_DIR = resolve(SCREENSHOTS_DIR, 'changes');
   protected readonly ext = '.png';
+  protected override readonly extraExts = ['.jpg'];
   protected readonly label = 'Screenshot compare';
 
   private readonly diff: VisualDiff;

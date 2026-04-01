@@ -1,11 +1,11 @@
-import { mkdir, writeFile } from 'fs/promises';
-import { existsSync } from 'fs';
-import { resolve } from 'path';
-import type { MCPClient } from './mcp-client.js';
+import { mkdir, writeFile } from "fs/promises";
+import { existsSync } from "fs";
+import { resolve } from "path";
+import type { MCPClient } from "./mcp-client.js";
 
-const SCREENSHOTS_DIR = resolve(process.cwd(), 'screenshots');
-const INCOMING_DIR = resolve(SCREENSHOTS_DIR, 'incoming');
-const SNAPSHOTS_INCOMING_DIR = resolve(SCREENSHOTS_DIR, 'snapshots-incoming');
+const SCREENSHOTS_DIR = resolve(process.cwd(), "screenshots");
+const INCOMING_DIR = resolve(SCREENSHOTS_DIR, "incoming");
+const SNAPSHOTS_INCOMING_DIR = resolve(SCREENSHOTS_DIR, "snapshots-incoming");
 
 export class Screenshotter {
   async init(): Promise<void> {
@@ -24,13 +24,13 @@ export class Screenshotter {
     step: number,
     toolName: string,
     toolArgs: Record<string, unknown>,
-    mcpClient: MCPClient
+    mcpClient: MCPClient,
   ): Promise<SavedScreenshot | null> {
     try {
       const result = await mcpClient.screenshot();
       if (!result?.content) return null;
 
-      const imageContent = result.content.find((c) => c.type === 'image');
+      const imageContent = result.content.find((c) => c.type === "image");
       if (!imageContent?.data) return null;
 
       return this.saveBase64(step, toolName, toolArgs, imageContent.data);
@@ -44,32 +44,64 @@ export class Screenshotter {
     step: number,
     toolName: string,
     toolArgs: Record<string, unknown>,
-    base64: string
+    base64: string,
+    url?: string | null,
   ): Promise<SavedScreenshot | null> {
     try {
       const key = this.buildComparisonKey(toolName, toolArgs);
-      const imageBuffer = Buffer.from(base64, 'base64');
-      const filename = this.buildFilename(step, toolName, toolArgs, key);
+      const imageBuffer = Buffer.from(base64, "base64");
+      const ext = this.detectExt(imageBuffer);
+      const filename = this.buildFilename(step, toolName, toolArgs, key, ext);
       const filepath = resolve(INCOMING_DIR, filename);
       await writeFile(filepath, imageBuffer);
-      return { key, path: filepath };
+
+      // Save sidecar metadata file with URL and context
+      const meta = {
+        url: url ?? null,
+        step,
+        tool: toolName,
+        args: toolArgs,
+        savedAt: new Date().toISOString(),
+      };
+      const metaFilepath = filepath.replace(/\.[^.]+$/, ".json");
+      await writeFile(metaFilepath, JSON.stringify(meta, null, 2), "utf-8");
+
+      return { key, path: filepath, url: url ?? null };
     } catch (err) {
       console.error(`Screenshot save failed: ${(err as Error).message}`);
       return null;
     }
   }
 
+  private detectExt(buf: Buffer): string {
+    if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return ".jpg";
+    if (
+      buf[0] === 0x89 &&
+      buf[1] === 0x50 &&
+      buf[2] === 0x4e &&
+      buf[3] === 0x47
+    )
+      return ".png";
+    return ".png";
+  }
+
   async saveSnapshot(
     step: number,
     toolName: string,
     toolArgs: Record<string, unknown>,
-    text: string
+    text: string,
   ): Promise<string | null> {
     try {
       const key = this.buildComparisonKey(toolName, toolArgs);
-      const filename = this.buildFilename(step, toolName, toolArgs, key, '.txt');
+      const filename = this.buildFilename(
+        step,
+        toolName,
+        toolArgs,
+        key,
+        ".txt",
+      );
       const filepath = resolve(SNAPSHOTS_INCOMING_DIR, filename);
-      await writeFile(filepath, text, 'utf-8');
+      await writeFile(filepath, text, "utf-8");
       return filepath;
     } catch (err) {
       console.error(`Snapshot save failed: ${(err as Error).message}`);
@@ -82,22 +114,22 @@ export class Screenshotter {
     toolName: string,
     toolArgs: Record<string, unknown>,
     keyOverride?: string,
-    ext = '.png'
+    ext = ".png",
   ): string {
-    const num = String(step).padStart(3, '0');
+    const num = String(step).padStart(3, "0");
 
     // browser_navigate -> navigate, browser_click -> click, etc.
-    const action = toolName.replace(/^browser_/, '').replace(/_/g, '-');
+    const action = toolName.replace(/^browser_/, "").replace(/_/g, "-");
 
     const argValue = this.pickMeaningfulArg(toolArgs);
 
-    let argPart = '';
+    let argPart = "";
     if (argValue) {
       argPart =
-        '-' +
+        "-" +
         String(argValue)
-          .replace(/https?:\/\//, '')
-          .replace(/[^a-z0-9._-]/gi, '_')
+          .replace(/https?:\/\//, "")
+          .replace(/[^a-z0-9._-]/gi, "_")
           .toLowerCase()
           .slice(0, 60);
     }
@@ -105,27 +137,30 @@ export class Screenshotter {
     const now = new Date();
     const datePart =
       `${now.getFullYear()}` +
-      `${String(now.getMonth() + 1).padStart(2, '0')}` +
-      `${String(now.getDate()).padStart(2, '0')}` +
-      `-${String(now.getHours()).padStart(2, '0')}` +
-      `${String(now.getMinutes()).padStart(2, '0')}` +
-      `${String(now.getSeconds()).padStart(2, '0')}`;
+      `${String(now.getMonth() + 1).padStart(2, "0")}` +
+      `${String(now.getDate()).padStart(2, "0")}` +
+      `-${String(now.getHours()).padStart(2, "0")}` +
+      `${String(now.getMinutes()).padStart(2, "0")}` +
+      `${String(now.getSeconds()).padStart(2, "0")}`;
 
     const key = keyOverride ?? `${action}${argPart}`;
     return `${num}-${key}_${datePart}${ext}`;
   }
 
-  buildComparisonKey(toolName: string, toolArgs: Record<string, unknown>): string {
-    const action = toolName.replace(/^browser_/, '').replace(/_/g, '-');
+  buildComparisonKey(
+    toolName: string,
+    toolArgs: Record<string, unknown>,
+  ): string {
+    const action = toolName.replace(/^browser_/, "").replace(/_/g, "-");
     const argValue = this.pickStableArg(toolArgs);
 
     const normalizedArg = argValue
       ? `-${String(argValue)
-          .replace(/https?:\/\//, '')
-          .replace(/[^a-z0-9._-]/gi, '_')
+          .replace(/https?:\/\//, "")
+          .replace(/[^a-z0-9._-]/gi, "_")
           .toLowerCase()
           .slice(0, 80)}`
-      : '';
+      : "";
 
     return `${action}${normalizedArg}`;
   }
@@ -134,7 +169,7 @@ export class Screenshotter {
     const values: string[] = [];
 
     const pushIfString = (value: unknown): void => {
-      if (typeof value === 'string' && value.trim()) values.push(value.trim());
+      if (typeof value === "string" && value.trim()) values.push(value.trim());
     };
 
     // Keep keys stable across runs; avoid volatile values like ref (e123).
@@ -144,14 +179,14 @@ export class Screenshotter {
     pushIfString(toolArgs?.key);
 
     const index = toolArgs?.index;
-    if (typeof index === 'number') values.push(`index-${index}`);
+    if (typeof index === "number") values.push(`index-${index}`);
 
     const time = toolArgs?.time;
-    if (typeof time === 'number') values.push(`time-${time}`);
+    if (typeof time === "number") values.push(`time-${time}`);
 
     const valuesArg = toolArgs?.values;
     if (Array.isArray(valuesArg) && valuesArg.length > 0) {
-      values.push(`values-${valuesArg.join('_')}`);
+      values.push(`values-${valuesArg.join("_")}`);
     }
 
     // Fallback for tools where only free-text input exists.
@@ -160,14 +195,14 @@ export class Screenshotter {
       pushIfString(toolArgs?.value);
     }
 
-    return values.slice(0, 2).join('-');
+    return values.slice(0, 2).join("-");
   }
 
   private pickMeaningfulArg(toolArgs: Record<string, unknown>): string {
     const values: string[] = [];
 
     const pushIfString = (value: unknown): void => {
-      if (typeof value === 'string' && value.trim()) values.push(value.trim());
+      if (typeof value === "string" && value.trim()) values.push(value.trim());
     };
 
     pushIfString(toolArgs?.url);
@@ -179,21 +214,22 @@ export class Screenshotter {
     pushIfString(toolArgs?.ref);
 
     const index = toolArgs?.index;
-    if (typeof index === 'number') values.push(`index-${index}`);
+    if (typeof index === "number") values.push(`index-${index}`);
 
     const time = toolArgs?.time;
-    if (typeof time === 'number') values.push(`time-${time}`);
+    if (typeof time === "number") values.push(`time-${time}`);
 
     const valuesArg = toolArgs?.values;
     if (Array.isArray(valuesArg) && valuesArg.length > 0) {
-      values.push(`values-${valuesArg.join('_')}`);
+      values.push(`values-${valuesArg.join("_")}`);
     }
 
-    return values.slice(0, 2).join('-');
+    return values.slice(0, 2).join("-");
   }
 }
 
 export interface SavedScreenshot {
   key: string;
   path: string;
+  url: string | null;
 }

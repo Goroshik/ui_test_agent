@@ -1,0 +1,75 @@
+{
+  "pages": {
+    "http://localhost:3000/v1/login": {
+      "landmarks": "none",
+      "headings": "none",
+      "interactive": "Home link, Sign In link, Continue with Google button, Email input, Password input, Sign in button, Create an account link, Forgot password? link",
+      "forms": "Login form: email, password, sign in button",
+      "structure": "The page is a login interface featuring a header with navigation and branding, followed by a central card containing social login options (Google), a password entry section with email and password fields, and links for account creation or password recovery.",
+      "analyzedAt": "2026-04-01T15:37:33.959Z"
+    },
+    "http://localhost:3000/member-admin/settings/policies": {
+      "landmarks": "navigation, main, banner, contentinfo",
+      "headings": "none",
+      "interactive": "Back, Personal Info, Documents, Billing details, Security, Company Details, Integrations, Members & Permissions, Security, Projects, Policies, Legal Entities, Calendars, Workflow Templates, Tags, Custom fields, Custom job role, Payroll Configs, Notification settings, BambooHR settings, Time tracker, Digital contracts, Bank integration, ADD NEW POLICY, View, View, View",
+      "forms": "none",
+      "structure": "The page is a member admin settings dashboard displaying a list of policies with options to view details or add new ones, organized under navigation categories like Personal Info, Company, Permissions, Organization, Customization, and Advanced.",
+      "analyzedAt": "2026-04-01T10:57:51.621Z"
+    },
+    "http://localhost:3000/member-hr/home": {
+      "landmarks": "navigation, main, banner, contentinfo, form, search, region",
+      "headings": "none",
+      "interactive": "Get started with Juggl, Home, Team, Requests, Timesheets, Org chart, Tasks, Inventory, Subscription, Reports, Invoices, Payments, Settings, Log out, Departments, Projects, Reset",
+      "forms": "Search form: textbox \"Search\", button \"Departments\", button \"Projects\", button \"Reset\"",
+      "structure": "The page is a member HR dashboard featuring a top navigation bar with links to various modules like Team, Requests, and Timesheets, alongside a secondary menu for admin functions such as Finance and Reports. Below the navigation, there is a welcome message and a search/filter section allowing users to filter by Departments or Projects, followed by a progress bar visualization for team time offs.",
+      "analyzedAt": "2026-04-01T15:37:37.371Z"
+    },
+    "http://localhost:3000/member-hr/team": {
+      "landmarks": "navigation, main, complementary",
+      "headings": "none",
+      "interactive": "Home, Team, Requests, Timesheets, Org chart, Tasks, Inventory, Subscription, Reports, Invoices, Payments, Settings, Log out, Add member, Type, Project, Department, Country, Status, Tags, Reset",
+      "forms": "Search form: textbox \"Search\", combobox \"Rows per page\"",
+      "structure": "The page features a top navigation bar with user profile and settings links, followed by a main content area displaying team members with filtering options for type, project, department, country, status, and tags, along with pagination controls.",
+      "analyzedAt": "2026-04-01T15:37:40.335Z"
+    },
+    "http://localhost:3000/member-hr/requests": {
+      "landmarks": "navigation, main, banner, contentinfo",
+      "headings": "none",
+      "interactive": "Home, Team, Requests, Timesheets, Org chart, Tasks, Inventory, Subscription, Reports, Invoices, Payments, Settings, Log out, Bonus/Benefit Bulk Import, Add request, Search, Month & Year, Project, Type, Status, Tags, Reset",
+      "forms": "none",
+      "structure": "The page is a member HR requests dashboard featuring a top navigation bar with links to various sections like Home, Team, and Timesheets, alongside user profile controls. Below the header, there is a main content area displaying a list of 132 requests with filtering options for month, project, type, status, and tags, as well as pagination controls.",
+      "analyzedAt": "2026-04-01T15:37:43.666Z"
+    },
+    "http://localhost:3000/member-hr/orgchart": {
+      "landmarks": "navigation, banner, complementary",
+      "headings": "none",
+      "interactive": "Home, Team, Requests, Timesheets, Org chart, Tasks, Inventory, Subscription, Reports, Invoices, Payments, Settings, Log out, Goroshik Test, Goroshik, Contractor, Goroshik, BYN, Goroshik, HR",
+      "forms": "none",
+      "structure": "The page features a top navigation bar with links to various sections like Home, Team, and Org chart, alongside user profile controls. Below the header, there is a complementary region displaying a list of team members or employees with their names, emails, and roles.",
+      "analyzedAt": "2026-04-01T15:37:46.690Z"
+    },
+    "http://localhost:3000/member-hr/workflow-tasks/tasks?skip=0&take=25&page=0&sortModel=dueDate%3Basc": {
+      "landmarks": "navigation, main, banner, contentinfo",
+      "headings": "none",
+      "interactive": "Home, Team, Requests, Timesheets, Org chart, Tasks, Inventory, Subscription, Reports, Invoices, Payments, Settings, Log out, Create Task, Create Workflow, Status, Priority, Assigned To, Project, Member, Department",
+      "forms": "Search form: textbox \"Search\"",
+      "analyzedAt": "2026-04-01T15:37:49.310Z"
+    },
+    "http://localhost:3000/member-admin/inventory?skip=0&take=25&page=0&sortModel=name%3Basc": {
+      "landmarks": "navigation, banner, complementary",
+      "headings": "none",
+      "interactive": "Home, Team, Requests, Timesheets, Org chart, Tasks, Inventory, Subscription, Reports, Invoices, Payments, Settings, Log out, Add item, Status, Legal Entity, Show only unassigned, Reset, Rows per page combobox, Sort button",
+      "forms": "Search form: textbox \"Search\", filter buttons (Status, Legal Entity, Show only unassigned), pagination controls",
+      "structure": "The page is an inventory management dashboard featuring a top navigation bar with HR and Admin links, a secondary settings/logout menu, a header section with an add item button and search/filter toolbar, and a data grid displaying inventory items with sortable columns.",
+      "analyzedAt": "2026-04-01T15:37:52.847Z"
+    },
+    "http://localhost:3000/member-hr/workflow-tasks/workflows?skip=0&take=25&page=0&sortModel=name%3Basc": {
+      "landmarks": "navigation, main, banner, contentinfo, complementary, form, search, region",
+      "headings": "none",
+      "interactive": "Home, Team, Requests, Timesheets, Org chart, Tasks, Inventory, Subscription, Reports, Invoices, Payments, Settings, Log out, Create Task, Create Workflow, Project, Member, Offer, Reset, Rows per page combobox, Go to previous page, Go to next page",
+      "forms": "Search form: textbox \"Search\", buttons \"Project\", \"Member\", \"Offer\", \"Reset\"",
+      "structure": "The page is a workflow management dashboard featuring a top navigation bar with user profile and settings, a secondary menu for module switching (Tasks, Workflows), a search/filter toolbar with project/member/offer filters, and a data grid displaying workflow rows with pagination controls.",
+      "analyzedAt": "2026-04-01T15:54:08.752Z"
+    }
+  }
+}

@@ -6,3 +6,4 @@ visual-bot/screenshots/*.jpeg
 /screenshots/
 /dist/
 /.idea/
+/logs/
