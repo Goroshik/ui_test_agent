@@ -1,12 +1,11 @@
 import { mkdir, writeFile } from 'fs/promises';
 import { existsSync } from 'fs';
-import { resolve, dirname } from 'path';
-import { fileURLToPath } from 'url';
+import { resolve } from 'path';
 import type { MCPClient } from './mcp-client.js';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const SCREENSHOTS_DIR = resolve(__dirname, '..', 'screenshots');
+const SCREENSHOTS_DIR = resolve(process.cwd(), 'screenshots');
 const INCOMING_DIR = resolve(SCREENSHOTS_DIR, 'incoming');
+const SNAPSHOTS_INCOMING_DIR = resolve(SCREENSHOTS_DIR, 'snapshots-incoming');
 
 export class Screenshotter {
   async init(): Promise<void> {
@@ -15,6 +14,9 @@ export class Screenshotter {
     }
     if (!existsSync(INCOMING_DIR)) {
       await mkdir(INCOMING_DIR, { recursive: true });
+    }
+    if (!existsSync(SNAPSHOTS_INCOMING_DIR)) {
+      await mkdir(SNAPSHOTS_INCOMING_DIR, { recursive: true });
     }
   }
 
@@ -32,7 +34,8 @@ export class Screenshotter {
       if (!imageContent?.data) return null;
 
       return this.saveBase64(step, toolName, toolArgs, imageContent.data);
-    } catch {
+    } catch (err) {
+      console.error(`Screenshot capture failed: ${(err as Error).message}`);
       return null;
     }
   }
@@ -50,7 +53,8 @@ export class Screenshotter {
       const filepath = resolve(INCOMING_DIR, filename);
       await writeFile(filepath, imageBuffer);
       return { key, path: filepath };
-    } catch {
+    } catch (err) {
+      console.error(`Screenshot save failed: ${(err as Error).message}`);
       return null;
     }
   }
@@ -62,11 +66,13 @@ export class Screenshotter {
     text: string
   ): Promise<string | null> {
     try {
-      const filename = this.buildFilename(step, toolName, toolArgs, undefined, '.txt');
-      const filepath = resolve(SCREENSHOTS_DIR, filename);
+      const key = this.buildComparisonKey(toolName, toolArgs);
+      const filename = this.buildFilename(step, toolName, toolArgs, key, '.txt');
+      const filepath = resolve(SNAPSHOTS_INCOMING_DIR, filename);
       await writeFile(filepath, text, 'utf-8');
       return filepath;
-    } catch {
+    } catch (err) {
+      console.error(`Snapshot save failed: ${(err as Error).message}`);
       return null;
     }
   }
@@ -83,15 +89,7 @@ export class Screenshotter {
     // browser_navigate -> navigate, browser_click -> click, etc.
     const action = toolName.replace(/^browser_/, '').replace(/_/g, '-');
 
-    // Pick the most meaningful argument for the filename
-    const url = (toolArgs?.url as string) || '';
-    const argValue =
-      url ||
-      (toolArgs?.selector as string) ||
-      (toolArgs?.text as string) ||
-      (toolArgs?.key as string) ||
-      (toolArgs?.value as string) ||
-      '';
+    const argValue = this.pickMeaningfulArg(toolArgs);
 
     let argPart = '';
     if (argValue) {
@@ -119,14 +117,7 @@ export class Screenshotter {
 
   buildComparisonKey(toolName: string, toolArgs: Record<string, unknown>): string {
     const action = toolName.replace(/^browser_/, '').replace(/_/g, '-');
-    const url = (toolArgs?.url as string) || '';
-    const argValue =
-      url ||
-      (toolArgs?.selector as string) ||
-      (toolArgs?.text as string) ||
-      (toolArgs?.key as string) ||
-      (toolArgs?.value as string) ||
-      '';
+    const argValue = this.pickStableArg(toolArgs);
 
     const normalizedArg = argValue
       ? `-${String(argValue)
@@ -137,6 +128,68 @@ export class Screenshotter {
       : '';
 
     return `${action}${normalizedArg}`;
+  }
+
+  private pickStableArg(toolArgs: Record<string, unknown>): string {
+    const values: string[] = [];
+
+    const pushIfString = (value: unknown): void => {
+      if (typeof value === 'string' && value.trim()) values.push(value.trim());
+    };
+
+    // Keep keys stable across runs; avoid volatile values like ref (e123).
+    pushIfString(toolArgs?.url);
+    pushIfString(toolArgs?.selector);
+    pushIfString(toolArgs?.element);
+    pushIfString(toolArgs?.key);
+
+    const index = toolArgs?.index;
+    if (typeof index === 'number') values.push(`index-${index}`);
+
+    const time = toolArgs?.time;
+    if (typeof time === 'number') values.push(`time-${time}`);
+
+    const valuesArg = toolArgs?.values;
+    if (Array.isArray(valuesArg) && valuesArg.length > 0) {
+      values.push(`values-${valuesArg.join('_')}`);
+    }
+
+    // Fallback for tools where only free-text input exists.
+    if (values.length === 0) {
+      pushIfString(toolArgs?.text);
+      pushIfString(toolArgs?.value);
+    }
+
+    return values.slice(0, 2).join('-');
+  }
+
+  private pickMeaningfulArg(toolArgs: Record<string, unknown>): string {
+    const values: string[] = [];
+
+    const pushIfString = (value: unknown): void => {
+      if (typeof value === 'string' && value.trim()) values.push(value.trim());
+    };
+
+    pushIfString(toolArgs?.url);
+    pushIfString(toolArgs?.element);
+    pushIfString(toolArgs?.selector);
+    pushIfString(toolArgs?.text);
+    pushIfString(toolArgs?.key);
+    pushIfString(toolArgs?.value);
+    pushIfString(toolArgs?.ref);
+
+    const index = toolArgs?.index;
+    if (typeof index === 'number') values.push(`index-${index}`);
+
+    const time = toolArgs?.time;
+    if (typeof time === 'number') values.push(`time-${time}`);
+
+    const valuesArg = toolArgs?.values;
+    if (Array.isArray(valuesArg) && valuesArg.length > 0) {
+      values.push(`values-${valuesArg.join('_')}`);
+    }
+
+    return values.slice(0, 2).join('-');
   }
 }
 

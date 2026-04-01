@@ -3,13 +3,25 @@
   "version": "1.0.0",
   "type": "module",
   "description": "Terminal AI agent that controls a browser via Playwright MCP",
-  "main": "visual-bot/index.js",
+  "main": "visual-bot/index.ts",
   "scripts": {
-    "start": "node visual-bot/index.js"
+    "start": "tsx visual-bot/index.ts",
+    "start:compare": "tsx visual-bot/snapshot-compare.ts",
+    "start:compare:screenshots": "tsx visual-bot/snapshot-compare.ts",
+    "start:compare:snapshots": "tsx visual-bot/snapshot-text-compare.ts",
+    "build": "tsc",
+    "start:compare:dist": "node dist/visual-bot/snapshot-compare.js",
+    "start:compare:snapshots:dist": "node dist/visual-bot/snapshot-text-compare.js",
+    "start:dist": "node dist/visual-bot/index.js"
   },
   "dependencies": {
     "@playwright/mcp": "^0.0.29",
     "dotenv": "^16.4.5",
     "openai": "^4.77.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.2"
   }
 }

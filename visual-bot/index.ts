@@ -2,7 +2,7 @@ import { config } from 'dotenv';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 config({ path: resolve(dirname(fileURLToPath(import.meta.url)), '..', '.env') });
-import { Agent } from './agent.js';
+import { Agent } from './agents/main/agent.js';
 
 const prompt = process.argv.slice(2).join(' ').trim();
 

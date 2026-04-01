@@ -1,7 +1,8 @@
 import OpenAI from 'openai';
-import { MCPClient } from './mcp-client.js';
-import { Screenshotter } from './screenshotter.js';
-import { PostRunVisualAgent } from './post-run-visual-agent.js';
+import { MCPClient } from '../../mcp-client.js';
+import { Screenshotter } from '../../screenshotter.js';
+import { PostRunCompareAgent } from '../post-run/post-run-snapshot-compare-agent.js';
+import { resolveModel } from '../../utils.js';
 
 // Playwright MCP doesn't expose inputSchema via protocol — define them manually
 const TOOL_SCHEMAS: Record<string, OpenAI.FunctionParameters> = {
@@ -70,6 +71,7 @@ export class Agent {
   private mcp: MCPClient;
   private screenshotter: Screenshotter;
   private stepCount = 0;
+  private lastSnapshotSignature: string | null = null;
 
   constructor() {
     this.client = new OpenAI({
@@ -80,18 +82,8 @@ export class Agent {
     this.screenshotter = new Screenshotter();
   }
 
-  private async _resolveModel(): Promise<string> {
-    if (process.env.LM_STUDIO_MODEL) {
-      return process.env.LM_STUDIO_MODEL;
-    }
-    const list = await this.client.models.list();
-    const chat = list.data.find((m) => !m.id.includes('embedding'));
-    if (!chat) throw new Error('No loaded models found in LM Studio');
-    return chat.id;
-  }
-
   async run(prompt: string): Promise<void> {
-    this.model = await this._resolveModel();
+    this.model = await resolveModel(this.client);
     console.log(`\nTask: ${prompt}`);
     console.log('─'.repeat(50));
     console.log(`Model: ${this.model}`);
@@ -177,46 +169,16 @@ export class Agent {
           console.log(`    Result: ${content.slice(0, 300)}${content.length > 300 ? '…' : ''}`);
         }
 
-        // Save accessibility snapshot when browser_snapshot is called
-        if (toolName === 'browser_snapshot' && content) {
-          this.stepCount++;
-          await this.screenshotter.saveSnapshot(this.stepCount, toolName, toolArgs, content);
-          const filename = this.screenshotter.buildFilename(this.stepCount, toolName, toolArgs, '.txt');
-          console.log(`    Snapshot: ./screenshots/${filename}`);
-        }
-
-        // Auto-screenshot after every tool call, attach image to next user message
-        const NON_VISUAL_TOOLS = new Set([
-          'browser_take_screenshot',
-          'browser_generate_playwright_test',
-          'browser_close',
-          'browser_install',
-          'browser_console_messages',
-          'browser_network_requests',
-          'browser_snapshot',
-        ]);
         let screenshotBase64: string | null = null;
-        if (!NON_VISUAL_TOOLS.has(toolName)) {
-          this.stepCount++;
-          const screenshotResult = await this.mcp.screenshot();
-          if (screenshotResult?.content) {
-            const imageContent = screenshotResult.content.find(
-              (c) => c.type === 'image' || c.type === 'image_url'
-            );
-            const data = imageContent?.data ?? imageContent?.url;
-            if (data) {
-              screenshotBase64 = data;
-              const saved = await this.screenshotter.saveBase64(this.stepCount, toolName, toolArgs, screenshotBase64);
-              if (saved) {
-                console.log(`    Screenshot queued: ${saved.path}`);
-              } else {
-                console.log('    Screenshot: failed to save');
-              }
-            } else {
-              console.log(`    Screenshot: no image data`, JSON.stringify(screenshotResult).slice(0, 200));
-            }
+        if (toolName === 'browser_snapshot') {
+          screenshotBase64 = await this._processSnapshotAndMaybeCapture(toolName, toolArgs, content);
+        } else {
+          const freshSnapshot = await this.mcp.snapshot();
+          const freshSnapshotText = this._extractTextContent(freshSnapshot);
+          if (freshSnapshotText) {
+            screenshotBase64 = await this._processSnapshotAndMaybeCapture(toolName, toolArgs, freshSnapshotText);
           } else {
-            console.log(`    Screenshot: failed (null result)`);
+            console.log('    Snapshot: failed to fetch after action');
           }
         }
 
@@ -248,7 +210,7 @@ export class Agent {
     this.mcp.disconnect();
 
     if (this.model) {
-      const postRunAgent = new PostRunVisualAgent(this.client, this.model);
+      const postRunAgent = new PostRunCompareAgent(this.client, this.model);
       await postRunAgent.process();
     }
   }
@@ -273,5 +235,69 @@ export class Agent {
       .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
       .join(', ');
     return `{ ${entries} }`;
+  }
+
+  private _snapshotSignature(snapshotText: string): string {
+    return snapshotText.replace(/\s+/g, ' ').trim();
+  }
+
+  private async _processSnapshotAndMaybeCapture(
+    sourceToolName: string,
+    sourceToolArgs: Record<string, unknown>,
+    snapshotText: string
+  ): Promise<string | null> {
+    this.stepCount++;
+    const snapshotPath = await this.screenshotter.saveSnapshot(
+      this.stepCount,
+      sourceToolName,
+      sourceToolArgs,
+      snapshotText
+    );
+    const filename = this.screenshotter.buildFilename(
+      this.stepCount,
+      sourceToolName,
+      sourceToolArgs,
+      this.screenshotter.buildComparisonKey(sourceToolName, sourceToolArgs),
+      '.txt'
+    );
+    console.log(`    Snapshot: ${snapshotPath ?? `./screenshots/snapshots-incoming/${filename}`}`);
+
+    const nextSignature = this._snapshotSignature(snapshotText);
+    const isChanged = this.lastSnapshotSignature === null || this.lastSnapshotSignature !== nextSignature;
+    this.lastSnapshotSignature = nextSignature;
+
+    if (!isChanged) {
+      console.log('    Screenshot skipped: no page changes detected');
+      return null;
+    }
+
+    this.stepCount++;
+    const screenshotResult = await this.mcp.screenshot();
+    if (!screenshotResult?.content) {
+      console.log('    Screenshot: failed (null result)');
+      return null;
+    }
+
+    const imageContent = screenshotResult.content.find((c) => c.type === 'image' || c.type === 'image_url');
+    const data = imageContent?.data ?? imageContent?.url;
+    if (!data) {
+      console.log(`    Screenshot: no image data`, JSON.stringify(screenshotResult).slice(0, 200));
+      return null;
+    }
+
+    const base64 = data.startsWith('data:image/') ? data.split(',')[1] ?? '' : data;
+    if (!base64) {
+      console.log('    Screenshot: empty base64 payload');
+      return null;
+    }
+
+    const saved = await this.screenshotter.saveBase64(this.stepCount, sourceToolName, sourceToolArgs, base64);
+    if (!saved) {
+      console.log('    Screenshot: failed to save');
+      return null;
+    }
+
+    console.log(`    Screenshot saved (page changed): ${saved.path}`);
+    return base64;
   }
 }
