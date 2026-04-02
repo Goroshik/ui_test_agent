@@ -65,7 +65,7 @@ try {
   const plan = await new PlannerAgent(client).plan(userTask, memoryAnalysis);
 
   // 3. Main agent executes the plan
-  const agent = new Agent(client);
+  const agent = new Agent(client, logger);
   await agent.run(plan);
 
   // 4. Analyze screenshots taken this run → write page descriptions to memory

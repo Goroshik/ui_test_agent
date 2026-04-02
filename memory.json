@@ -1,8 +1,8 @@
 {
   "visits": {
     "http://localhost:3000/v1/login": {
-      "lastVisited": "2026-04-01T15:47:50.460Z",
-      "visitCount": 12
+      "lastVisited": "2026-04-02T10:02:19.583Z",
+      "visitCount": 15
     },
     "http://localhost:3000/member-hr/home": {
       "lastVisited": "2026-04-01T15:48:07.235Z",
@@ -41,16 +41,20 @@
       "visitCount": 1
     },
     "https://test.app.juggl.co/v1/login": {
-      "lastVisited": "2026-04-01T16:16:45.829Z",
-      "visitCount": 5
+      "lastVisited": "2026-04-02T10:12:47.706Z",
+      "visitCount": 19
     },
     "https://test.app.juggl.co/member-hr/home": {
-      "lastVisited": "2026-04-01T16:17:10.428Z",
-      "visitCount": 6
+      "lastVisited": "2026-04-02T10:13:13.794Z",
+      "visitCount": 15
     },
     "https://test.app.juggl.co/member-admin/settings/projects?skip=0&take=25&page=0&sortModel=name%3Basc": {
-      "lastVisited": "2026-04-01T16:18:01.931Z",
-      "visitCount": 14
+      "lastVisited": "2026-04-01T19:57:27.794Z",
+      "visitCount": 34
+    },
+    "https://test.app.juggl.co/member-admin/settings/policies": {
+      "lastVisited": "2026-04-02T10:14:10.775Z",
+      "visitCount": 34
     }
   },
   "pages": {
@@ -215,6 +219,105 @@
       "keyActions": "Create Task, Create Workflow, Search, Sort by Name (ascending)",
       "sections": "Left sidebar navigation, Main content area with workflow table",
       "analyzedAt": "2026-04-01T15:53:41.625Z"
+    },
+    "https://test.app.juggl.co/v1/login": {
+      "title": "unknown",
+      "purpose": "This page is a login form for the test application.",
+      "navigation": "none",
+      "forms": "Login form: email, password",
+      "keyActions": "Sign in button, Forgot password link",
+      "sections": "Login form",
+      "analyzedAt": "2026-04-01T19:49:06.175Z"
+    },
+    "https://test.app.juggl.co/member-hr/home": {
+      "title": "Welcome home, Goroshik!",
+      "purpose": "This page is the main dashboard for a team member (Goroshik BYN) to manage their time off requests and view contract expiration status.",
+      "navigation": "Personal info, Documents, Billing details, Security, Company Details, Integrations, Members & Permissions, Security, Projects, Policies, Legal Entities, Calendars, Customization, Workflow Templates, Tags, Custom fields, Custom job role, Advanced, Payroll Config, Notification settings, BambooHR settings, Time tracker, Digital contracts, Bank integration",
+      "forms": "Team time-offs form with search field, department and project dropdowns, calendar grid for selecting dates, employee name input, and status indicators (Vacation)",
+      "keyActions": "Search button, Departments dropdown, Projects dropdown, Add new button, No expiring contracts yet message",
+      "sections": "Welcome header, Team time-offs section, Tasks section, Expiring Contracts section",
+      "analyzedAt": "2026-04-01T19:49:12.486Z"
+    },
+    "https://test.app.juggl.co/member-admin/settings/projects?skip=0&take=25&page=0&sortModel=name%3Basc": {
+      "title": "Projects - Juggl",
+      "purpose": "This page displays a list of projects for management, allowing users to view project details and perform actions like adding new projects.",
+      "navigation": "Personal info, Documents, Billing details, Security, COMPANY, Company Details, Integrations, PERMISSIONS, Members & Permissions, Security, ORGANIZATION, Projects, Policies, Legal Entities, Calendars, CUSTOMIZATION, Workflow Templates, Tags, Custom fields, Custom job role, ADVANCED, Payment Config, Notification settings, Barcode/QR settings, Time tracker, Digital contacts, Bank integration",
+      "forms": "none",
+      "keyActions": "ADD NEW PROJECT button, Search input, Country dropdown, Currency dropdown, Rows per page dropdown, Pagination controls (previous/next)",
+      "sections": "Project list table with columns for Name, Description, Team size, Currency, Country",
+      "analyzedAt": "2026-04-01T19:49:37.453Z"
+    },
+    "https://app.jugl.com/": {
+      "title": "Create a Project",
+      "purpose": "This page is a modal form for creating a new project within the Jugl application.",
+      "navigation": "none",
+      "forms": "Create a Project form: Project name, Project description, Country (dropdown), Same as company location (checkbox), Project Currency (dropdown), Links about your project (website URL, LinkedIn URL, Twitter/X URL)",
+      "keyActions": "CREATE button",
+      "sections": "Project details section, Social links section",
+      "analyzedAt": "2026-04-01T19:48:38.312Z"
+    },
+    "https://app.jugglr.com/": {
+      "title": "Create a Project - Juggr",
+      "purpose": "This page is a form to create a new project within the Juggr platform.",
+      "navigation": "none",
+      "forms": "Project creation form: Project name, Project description, Country (dropdown), Same as company location (checkbox), Project currency (dropdown), Some links about your project (website URL, LinkedIn profile, Twitter handle)",
+      "keyActions": "CREATE button",
+      "sections": "Project details section (name, description, country, currency), Social links section",
+      "analyzedAt": "2026-04-01T19:48:42.569Z"
+    },
+    "https://www.bamboo.hr/projects": {
+      "title": "Projects - Bamboo HR",
+      "purpose": "This page displays a list of projects within the Bamboo HR application, allowing users to view project details and manage them.",
+      "navigation": "Personal info, Documents, Billing details, Company info, Company Details, Integrations, Members & Permissions, Security, Organization, Policies, Legal Entities, Calendars, Workflow Templates, Tags, Custom fields, Custom job role, Payment Config, Notification settings, BambooHR settings, Time tracker, Digital contracts, Bank integration",
+      "forms": "Search form (Search input, Country dropdown, Currency dropdown)",
+      "keyActions": "ADD NEW PROJECT button, Reset button, Rows per page dropdown, pagination controls",
+      "sections": "Project list table (Name, Description, Team size, Currency, Country), Pagination",
+      "analyzedAt": "2026-04-01T19:48:45.799Z"
+    },
+    "https://app.juggle.com/": {
+      "title": "Create a Project",
+      "purpose": "This page is for creating a new project in the Juggle application by entering project details.",
+      "navigation": "none",
+      "forms": "Project creation form: Project name, Project description, Country (dropdown), Same as company location (checkbox), Project currency (dropdown), Website link, LinkedIn link, Twitter link",
+      "keyActions": "CREATE button",
+      "sections": "Project details section, Social links section",
+      "analyzedAt": "2026-04-01T19:49:04.688Z"
+    },
+    "https://app.jugglr.com/projects/new": {
+      "title": "Create a Project",
+      "purpose": "This page is for creating a new project by entering its details, including name, description, country, currency, and associated links.",
+      "navigation": "none",
+      "forms": "Project creation form: Project name (text), Project description (textarea), Country (dropdown with \"Poland\" selected), Same as company location (checkbox), Project Currency (dropdown), Website URL (text), LinkedIn URL (text), Twitter/X URL (text)",
+      "keyActions": "CREATE button, dropdowns for Country and Project Currency, checkboxes for currency settings",
+      "sections": "Header (\"Create a Project\"), Form fields grouped by type (basic info, location/currency, links), Footer with action button",
+      "analyzedAt": "2026-04-01T19:48:51.185Z"
+    },
+    "https://app.click.so/organization/projects": {
+      "title": "Projects",
+      "purpose": "This page displays a list of projects within an organization, allowing for search, filtering, and pagination.",
+      "navigation": "none",
+      "forms": "Search form: text input; Filter form: Country dropdown, Currency dropdown",
+      "keyActions": "Add New Project button, Search button, Reset button, Rows per page dropdown, Pagination controls",
+      "sections": "Projects table (with columns: Name, Description, Team size, Currency, Country), Filters bar",
+      "analyzedAt": "2026-04-01T19:48:55.665Z"
+    },
+    "https://app.jaggl.com/": {
+      "title": "Welcome home, Goroshiki!",
+      "purpose": "This is the main dashboard for a user named Goroshiki within the Jaggl application, showing team time-offs and tasks.",
+      "navigation": "Home, Team, Requests, Timesheets, Org chart, Tasks, Inventory, Subscription, Reports, Invoices, Payments, Settings, Log out",
+      "forms": "Search form (Search)",
+      "keyActions": "Add new, Departments dropdown, Projects dropdown",
+      "sections": "Team time-offs, Tasks, Expiring Contracts",
+      "analyzedAt": "2026-04-01T19:49:01.758Z"
+    },
+    "https://test.app.juggl.co/member-admin/settings/policies": {
+      "title": "Policies - Project новый тестовый про...",
+      "purpose": "Configure vacation and sick leave policy settings for a project in the member admin panel.",
+      "navigation": "Back, Personal Info, Security, Billing details, Company Details, Organization, Members & Permissions, Projects, Calendars, Workflow Templates, Tags, Custom fields, Default job role, Advanced, Payroll Configs, Notifications settings, BambooHR settings, Time tracker, Digital contacts, Bank integration",
+      "forms": "Vacation policy form: Accrued per period (days), Calculation method, Expiration rule, Allow negative vacation balance, Reset negative vacation balance on expiration, Sick days sum; Sick leaves section with Count, Sum, Calculated sum, Days beyond, Days beyond sum fields; Overtimes section with Daily/Enable only holidays checkbox, Multiplier field, Default hours in month field; Insurance checkbox",
+      "keyActions": "Save, Cancel",
+      "sections": "Accrued per period settings, Calculation method, Expiration rule, Allow negative vacation balance, Reset negative vacation balance on expiration, Sick leaves (Count, Sum, Calculated sum, Days beyond, Days beyond sum), Overtimes (Daily/Enable only holidays, Multiplier, Default hours in month), Insurance",
+      "analyzedAt": "2026-04-01T19:50:48.067Z"
     }
   }
 }

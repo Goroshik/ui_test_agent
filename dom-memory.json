@@ -70,6 +70,46 @@
       "forms": "Search form: textbox \"Search\", buttons \"Project\", \"Member\", \"Offer\", \"Reset\"",
       "structure": "The page is a workflow management dashboard featuring a top navigation bar with user profile and settings, a secondary menu for module switching (Tasks, Workflows), a search/filter toolbar with project/member/offer filters, and a data grid displaying workflow rows with pagination controls.",
       "analyzedAt": "2026-04-01T15:54:08.752Z"
+    },
+    "https://test.app.juggl.co/v1/login": {
+      "landmarks": "none",
+      "headings": "none",
+      "interactive": "Home link, Sign In link, Continue with Google button, Email input, Password input, Sign in button, Create an account link, Forgot password? link",
+      "forms": "Login form: email, password, sign in button",
+      "structure": "The page is a login interface featuring a header with navigation and branding, followed by a central card containing social login options (Google), a traditional username/password entry section, and links for account creation or password recovery.",
+      "analyzedAt": "2026-04-01T19:52:25.173Z"
+    },
+    "https://test.app.juggl.co/member-hr/home": {
+      "landmarks": "none",
+      "headings": "none",
+      "interactive": "Get started with Juggl, Back, Personal Info, Documents, Billing details, Security, Company Details, Integrations, Members & Permissions, Security, Projects, Policies, Legal Entities, Calendars, Workflow Templates, Tags, Custom fields, Custom job role, Payroll Configs, Notification settings, BambooHR settings, Time tracker, Digital contracts, Bank integration, Departments, Projects",
+      "forms": "none",
+      "structure": "The page is a member home dashboard featuring a top navigation bar with a \"Get started\" call-to-action and a back button. Below the header, there are several collapsible sections organized by category (Personal Info, Company, Permissions, Organization, Customization, Advanced) containing numerous settings links. A welcome message for the user \"Goroshik\" is displayed alongside a quick access area with icons for Team time offs and a search bar with filter buttons for Departments and Projects.",
+      "analyzedAt": "2026-04-01T19:52:37.759Z"
+    },
+    "https://test.app.juggl.co/member-admin/settings/projects?skip=0&take=25&page=0&sortModel=name%3Basc": {
+      "landmarks": "none",
+      "headings": "none",
+      "interactive": "Back, Personal Info, Documents, Billing details, Security, Company Details, Integrations, Members & Permissions, Security, Projects, Policies, Legal Entities, Calendars, Workflow Templates, Tags, Custom fields, Custom job role, Payroll Configs, Notification settings, BambooHR settings, Time tracker, Digital contracts, Bank integration, ADD NEW PROJECT, Search, Country, Currency, Reset",
+      "forms": "none",
+      "structure": "The page is a member administration settings dashboard for managing projects, featuring a sidebar navigation menu with categories like Personal Info, Company, Permissions, Organization, Customization, and Advanced. The main content area includes a header with an \"ADD NEW PROJECT\" button and a search/filter bar with inputs for searching projects and dropdowns for filtering by country and currency.",
+      "analyzedAt": "2026-04-01T19:53:21.003Z"
+    },
+    "https://test.app.juggl.co/member-admin/settings/policies": {
+      "landmarks": "navigation, main, banner, contentinfo",
+      "headings": "none",
+      "interactive": "Back, Personal Info, Documents, Billing details, Security, Company Details, Integrations, Members & Permissions, Security, Projects, Policies, Legal Entities, Calendars, Workflow Templates, Tags, Custom fields, Custom job role, Payroll Configs, Notification settings, BambooHR settings, Time tracker, Digital contracts, Bank integration, ADD NEW POLICY, View, View",
+      "forms": "none",
+      "structure": "The page is a member administration settings dashboard for policies, featuring a top-level navigation menu with categories like Personal Info, Company, and Advanced settings. Below the navigation, there is a main content area listing policy items such as \"Новая политика отпуска 2024\" and \"Новый тестовый проект_Standard\", each with a View button, alongside an ADD NEW POLICY button to create new entries.",
+      "analyzedAt": "2026-04-01T19:55:30.665Z"
+    },
+    "about:blank": {
+      "landmarks": "none",
+      "headings": "none",
+      "interactive": "none",
+      "forms": "none",
+      "structure": "The page is completely empty with no visible content, landmarks, headings, interactive elements, or forms.",
+      "analyzedAt": "2026-04-02T10:06:34.609Z"
     }
   }
 }

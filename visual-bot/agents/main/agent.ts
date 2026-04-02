@@ -4,6 +4,9 @@ import { Screenshotter } from '../../screenshotter.js';
 import { resolveModel } from '../../utils.js';
 import { recordVisit, getVisitSummary } from '../../memory.js';
 import { getDomContextSummary } from '../../dom-memory.js';
+import { RunLogger } from '../../run-logger.js';
+
+// ... (schemas and prompt omitted for brevity in thought, but included in actual replacement)
 
 // Playwright MCP doesn't expose inputSchema via protocol — define them manually
 const TOOL_SCHEMAS: Record<string, OpenAI.FunctionParameters> = {
@@ -78,6 +81,7 @@ const INTERACTION_TOOLS = new Set([
 
 export class Agent {
   private client: OpenAI;
+  private logger?: RunLogger;
   private model: string | null = null;
   private mcp: MCPClient;
   private screenshotter: Screenshotter;
@@ -86,11 +90,12 @@ export class Agent {
   // Snapshot text at the moment of the last screenshot — used to detect UI state changes
   private lastCapturedSnapshot: string | null = null;
 
-  constructor(client?: OpenAI) {
+  constructor(client?: OpenAI, logger?: RunLogger) {
     this.client = client ?? new OpenAI({
       baseURL: process.env.LM_STUDIO_BASE_URL || 'http://localhost:1234/v1',
       apiKey: process.env.LM_STUDIO_API_KEY || 'lm-studio',
     });
+    this.logger = logger;
     this.mcp = new MCPClient();
     this.screenshotter = new Screenshotter();
   }
@@ -181,8 +186,12 @@ export class Agent {
         try {
           result = await this.mcp.callTool(toolName, toolArgs);
         } catch (err) {
-          result = { content: [{ type: 'text', text: `Error: ${(err as Error).message}` }] };
-          console.error(`    Error: ${(err as Error).message}`);
+          const errorMsg = (err as Error).message;
+          result = { content: [{ type: 'text', text: `Error: ${errorMsg}` }] };
+          console.error(`    Error: ${errorMsg}`);
+          if (this.logger) {
+            await this.logger.logError(toolName, toolArgs, errorMsg);
+          }
         }
 
         // Feed tool result back to LLM

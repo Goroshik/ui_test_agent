@@ -4,11 +4,13 @@ import { resolve } from 'path';
 
 export class RunLogger {
   private readonly logPath: string;
+  private readonly errorPath: string;
   private initialized = false;
 
   constructor(runId: string) {
     const logsDir = resolve(process.cwd(), 'logs');
     this.logPath = resolve(logsDir, `run-${runId}.log`);
+    this.errorPath = resolve(logsDir, `run-${runId}-errors.log`);
   }
 
   async init(task: string): Promise<void> {
@@ -16,11 +18,8 @@ export class RunLogger {
     if (!existsSync(logsDir)) {
       await mkdir(logsDir, { recursive: true });
     }
-    await appendFile(
-      this.logPath,
-      `=== RUN START ===\nTask: ${task}\nTime: ${new Date().toISOString()}\n\n`,
-      'utf-8'
-    );
+    const header = `=== RUN START ===\nTask: ${task}\nTime: ${new Date().toISOString()}\n\n`;
+    await appendFile(this.logPath, header, 'utf-8');
     this.initialized = true;
     console.log(`[Logger] Run log: ${this.logPath}`);
   }
@@ -30,6 +29,16 @@ export class RunLogger {
     const ts = new Date().toISOString();
     const entry = `[${ts}] [${agent}]\n${content}\n${'─'.repeat(60)}\n\n`;
     await appendFile(this.logPath, entry, 'utf-8');
+  }
+
+  async logError(tool: string, args: unknown, error: string): Promise<void> {
+    if (!this.initialized) return;
+    const ts = new Date().toISOString();
+    const entry = `[${ts}] [ERROR] [${tool}]\nArgs: ${JSON.stringify(args, null, 2)}\nMessage: ${error}\n${'─'.repeat(60)}\n\n`;
+    await appendFile(this.errorPath, entry, 'utf-8');
+    if (!this.initialized) {
+        console.log(`[Logger] Error log created: ${this.errorPath}`);
+    }
   }
 
   async logEnd(): Promise<void> {
