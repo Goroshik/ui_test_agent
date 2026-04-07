@@ -1,6 +1,8 @@
 import OpenAI from 'openai';
-import { getPages } from '../../memory.js';
+import { getPages, PageRecord } from '../../memory.js';
 import { resolveModel } from '../../utils.js';
+
+const MAX_PAGES_IN_CONTEXT = 12;
 
 const ANALYSIS_PROMPT = `You are a navigation analyst for a browser automation agent.
 
@@ -21,17 +23,45 @@ Known shortcuts:
 
 If no pages in the knowledge base are relevant, write: NO_RELEVANT_MEMORY`;
 
+function scorePageRelevance(url: string, page: PageRecord, keywords: string[]): number {
+  const text = [url, page.title, page.purpose, page.navigation, page.forms, page.keyActions, page.sections]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+  return keywords.reduce((score, kw) => score + (text.includes(kw) ? 1 : 0), 0);
+}
+
+function extractKeywords(task: string): string[] {
+  return task
+    .toLowerCase()
+    .split(/[\s,./\-_]+/)
+    .filter(w => w.length > 2);
+}
+
 export class MemoryAnalysisAgent {
   constructor(private readonly client: OpenAI) {}
 
   async analyze(userTask: string): Promise<string> {
     const pages = await getPages();
-    const entries = Object.entries(pages);
+    const allEntries = Object.entries(pages);
 
-    if (entries.length === 0) {
+    if (allEntries.length === 0) {
       console.log('[MemoryAnalysis] No page knowledge yet — skipping.');
       return '';
     }
+
+    const keywords = extractKeywords(userTask);
+
+    // Score and sort by relevance, fall back to recency for ties
+    const scored = allEntries
+      .map(([url, p]) => ({ url, p, score: scorePageRelevance(url, p, keywords) }))
+      .sort((a, b) => b.score - a.score || b.p.analyzedAt.localeCompare(a.p.analyzedAt));
+
+    const entries = scored.slice(0, MAX_PAGES_IN_CONTEXT).map(({ url, p }) => [url, p] as [string, PageRecord]);
+
+    console.log(
+      `\n[MemoryAnalysis] Consulting ${entries.length}/${allEntries.length} page(s) (filtered by relevance)...`
+    );
 
     const knowledgeBase = entries
       .map(([url, p]) => [
@@ -44,8 +74,6 @@ export class MemoryAnalysisAgent {
         p.sections   ? `Sections: ${p.sections}`      : '',
       ].filter(Boolean).join('\n'))
       .join('\n\n---\n\n');
-
-    console.log(`\n[MemoryAnalysis] Consulting ${entries.length} known page(s)...`);
 
     let analysis: string;
     try {

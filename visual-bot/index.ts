@@ -13,6 +13,7 @@ import { PageMemoryAgent } from './agents/post-run/page-memory-agent.js';
 import { DomMemoryAgent } from './agents/post-run/dom-memory-agent.js';
 import { PostRunCompareAgent } from './agents/post-run/post-run-snapshot-compare-agent.js';
 import { RunLogger, attachLogger } from './run-logger.js';
+import { connectDB, closeDB, saveRun, updateRun } from './db.js';
 
 async function cleanIncomingDirs(): Promise<void> {
   const screenshotsDir = resolve(process.cwd(), 'screenshots');
@@ -45,49 +46,75 @@ const client = new OpenAI({
   apiKey: process.env.LM_STUDIO_API_KEY || 'lm-studio',
 });
 
+await connectDB();
+const mongoRunId = await saveRun({ task: userTask });
+
 // Create a per-run log file in logs/ directory
 const runId = new Date()
   .toISOString()
   .replace(/[:.]/g, '-')
   .replace('T', '_')
   .slice(0, 19);
-const logger = new RunLogger(runId);
+const logger = new RunLogger(runId, mongoRunId ?? undefined);
 await logger.init(userTask);
 attachLogger(client as Parameters<typeof attachLogger>[0], logger, 'LLM');
 
 try {
   const model = await resolveModel(client);
 
-  // 1. Analyze existing page memory → build navigation context for the planner
-  const memoryAnalysis = await new MemoryAnalysisAgent(client).analyze(userTask);
+  const plannerEnabled = process.env.PLANNER_ENABLED !== 'false';
 
+  // 1. Analyze existing page memory → build navigation context for the planner
   // 2. Planner builds step-by-step execution path using site knowledge
-  const plan = await new PlannerAgent(client).plan(userTask, memoryAnalysis);
+  let plan: string;
+  if (plannerEnabled) {
+    const memoryAnalysis = await new MemoryAnalysisAgent(client).analyze(userTask);
+    plan = await new PlannerAgent(client).plan(userTask, memoryAnalysis);
+  } else {
+    plan = userTask;
+  }
 
   // 3. Main agent executes the plan
-  const agent = new Agent(client, logger);
+  const agent = new Agent(client, logger, mongoRunId ?? undefined);
   await agent.run(plan);
+
+  const pageMemoryEnabled = process.env.PAGE_MEMORY_ENABLED !== 'false';
+  const domMemoryEnabled = process.env.DOM_MEMORY_ENABLED !== 'false';
+  const screenshotAnalysisEnabled = process.env.SCREENSHOT_ANALYSIS_ENABLED !== 'false';
+  const snapshotAnalysisEnabled = process.env.SNAPSHOT_ANALYSIS_ENABLED !== 'false';
 
   // 4. Analyze screenshots taken this run → write page descriptions to memory
   //    Must run before PostRunCompareAgent moves files out of incoming/
-  await new PageMemoryAgent(client, model).process();
+  if (pageMemoryEnabled) {
+    await new PageMemoryAgent(client, model).process();
+  }
 
   // 4b. Analyze accessibility snapshots → write DOM structure to dom-memory.json
-  await new DomMemoryAgent(client, model).process();
+  if (domMemoryEnabled) {
+    await new DomMemoryAgent(client, model).process();
+  }
 
   // 5. Visual + snapshot diff against baselines
-  const visualDisabled = process.env.VISUAL_DISABLED === 'true';
-  if (!visualDisabled) {
-    await new PostRunCompareAgent(client, model).process();
+  const compareAgent = new PostRunCompareAgent(client, model);
+  if (screenshotAnalysisEnabled) {
+    await compareAgent.processScreenshots();
+  }
+  if (snapshotAnalysisEnabled) {
+    await compareAgent.processSnapshots();
   }
 
   // 6. Clean up incoming dirs — remove any leftover files (including .json sidecars
-  //    that BaseCompareAgent skips, and all files when VISUAL_DISABLED=true)
+  //    that BaseCompareAgent skips)
   await cleanIncomingDirs();
 
   await logger.logEnd();
+  if (mongoRunId) await updateRun(mongoRunId, { status: 'completed' });
 } catch (err) {
   await logger.logEnd();
-  console.error('\nFatal error:', (err as Error).message);
-  process.exit(1);
+  const errMsg = (err as Error).message;
+  if (mongoRunId) await updateRun(mongoRunId, { status: 'failed', errorMessage: errMsg });
+  console.error('\nFatal error:', errMsg);
+  process.exitCode = 1;
+} finally {
+  await closeDB();
 }

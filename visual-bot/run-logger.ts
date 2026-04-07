@@ -1,16 +1,24 @@
 import { appendFile, mkdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import { resolve } from 'path';
+import { ObjectId } from 'mongodb';
+import { isDBConnected, dbSaveLog } from './db.js';
 
 export class RunLogger {
   private readonly logPath: string;
   private readonly errorPath: string;
   private initialized = false;
+  private mongoRunId?: ObjectId;
 
-  constructor(runId: string) {
+  constructor(runId: string, mongoRunId?: ObjectId) {
     const logsDir = resolve(process.cwd(), 'logs');
     this.logPath = resolve(logsDir, `run-${runId}.log`);
     this.errorPath = resolve(logsDir, `run-${runId}-errors.log`);
+    this.mongoRunId = mongoRunId;
+  }
+
+  setMongoRunId(id: ObjectId): void {
+    this.mongoRunId = id;
   }
 
   async init(task: string): Promise<void> {
@@ -29,6 +37,10 @@ export class RunLogger {
     const ts = new Date().toISOString();
     const entry = `[${ts}] [${agent}]\n${content}\n${'─'.repeat(60)}\n\n`;
     await appendFile(this.logPath, entry, 'utf-8');
+
+    if (isDBConnected() && this.mongoRunId) {
+      await dbSaveLog({ runId: this.mongoRunId, type: 'response', agent, content });
+    }
   }
 
   async logError(tool: string, args: unknown, error: string): Promise<void> {
@@ -36,8 +48,9 @@ export class RunLogger {
     const ts = new Date().toISOString();
     const entry = `[${ts}] [ERROR] [${tool}]\nArgs: ${JSON.stringify(args, null, 2)}\nMessage: ${error}\n${'─'.repeat(60)}\n\n`;
     await appendFile(this.errorPath, entry, 'utf-8');
-    if (!this.initialized) {
-        console.log(`[Logger] Error log created: ${this.errorPath}`);
+
+    if (isDBConnected() && this.mongoRunId) {
+      await dbSaveLog({ runId: this.mongoRunId, type: 'error', tool, args, content: error });
     }
   }
 

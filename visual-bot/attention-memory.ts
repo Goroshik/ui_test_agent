@@ -2,6 +2,14 @@ import OpenAI from 'openai';
 import { mkdir, readFile, writeFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { dirname, resolve } from 'path';
+import {
+  isDBConnected,
+  dbUpsertAttentionEntry,
+  dbGetAttentionEntries,
+  dbCountAttentionEntries,
+  dbPruneAttentionEntries,
+  type AttentionEntryDoc,
+} from './db.js';
 
 type MemoryKind = 'screenshot' | 'snapshot';
 
@@ -29,7 +37,7 @@ export class AttentionMemory {
   ) {}
 
   async getGuidance(limit = 8): Promise<string> {
-    const all = await this.load();
+    const all = await this._loadEntries();
     const entries = all
       .filter((e) => e.kind === this.kind)
       .slice(-limit);
@@ -53,7 +61,7 @@ export class AttentionMemory {
     const rule = await this.summarizeRule(key, cleanSummary, oldSample, newSample);
     if (!rule) return;
 
-    const all = await this.load();
+    const all = await this._loadEntries();
     const duplicate = all.find(
       (e) =>
         e.kind === this.kind &&
@@ -62,18 +70,29 @@ export class AttentionMemory {
     );
     if (duplicate) return;
 
-    const now = new Date().toISOString();
-    all.push({
+    const entry: AttentionMemoryEntry = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       kind: this.kind,
       key,
       summary: cleanSummary.slice(0, 300),
       rule,
-      createdAt: now,
-    });
+      createdAt: new Date().toISOString(),
+    };
 
-    const capped = all.slice(-Math.max(1, this.maxEntries));
-    await this.save(capped);
+    if (isDBConnected()) {
+      await dbUpsertAttentionEntry(entry as AttentionEntryDoc);
+      await dbPruneAttentionEntries(this.maxEntries);
+    } else {
+      const capped = [...all, entry].slice(-Math.max(1, this.maxEntries));
+      await this._saveToFile(capped);
+    }
+  }
+
+  private async _loadEntries(): Promise<AttentionMemoryEntry[]> {
+    if (isDBConnected()) {
+      return dbGetAttentionEntries() as Promise<AttentionMemoryEntry[]>;
+    }
+    return this._loadFromFile();
   }
 
   private async summarizeRule(
@@ -136,7 +155,7 @@ export class AttentionMemory {
     }
   }
 
-  private async load(): Promise<AttentionMemoryEntry[]> {
+  private async _loadFromFile(): Promise<AttentionMemoryEntry[]> {
     if (!existsSync(this.filePath)) return [];
     try {
       const raw = await readFile(this.filePath, 'utf-8');
@@ -148,7 +167,7 @@ export class AttentionMemory {
     }
   }
 
-  private async save(entries: AttentionMemoryEntry[]): Promise<void> {
+  private async _saveToFile(entries: AttentionMemoryEntry[]): Promise<void> {
     const dir = dirname(this.filePath);
     if (!existsSync(dir)) {
       await mkdir(dir, { recursive: true });

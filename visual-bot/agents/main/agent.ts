@@ -1,10 +1,13 @@
 import OpenAI from 'openai';
+import { ObjectId } from 'mongodb';
 import { MCPClient } from '../../mcp-client.js';
 import { Screenshotter } from '../../screenshotter.js';
 import { resolveModel } from '../../utils.js';
-import { recordVisit, getVisitSummary } from '../../memory.js';
-import { getDomContextSummary } from '../../dom-memory.js';
+import { recordVisit, getVisitSummary, getPageSummary } from '../../memory.js';
+import { getDomSummaryForUrl } from '../../dom-memory.js';
 import { RunLogger } from '../../run-logger.js';
+import { checkForLoop } from '../../loop-detector.js';
+import { saveStep } from '../../db.js';
 
 // ... (schemas and prompt omitted for brevity in thought, but included in actual replacement)
 
@@ -82,20 +85,23 @@ const INTERACTION_TOOLS = new Set([
 export class Agent {
   private client: OpenAI;
   private logger?: RunLogger;
+  private mongoRunId?: ObjectId;
   private model: string | null = null;
   private mcp: MCPClient;
   private screenshotter: Screenshotter;
   private stepCount = 0;
+  private mongoStepNumber = 0;
   private lastPageUrl: string | null = null;
   // Snapshot text at the moment of the last screenshot — used to detect UI state changes
   private lastCapturedSnapshot: string | null = null;
 
-  constructor(client?: OpenAI, logger?: RunLogger) {
+  constructor(client?: OpenAI, logger?: RunLogger, mongoRunId?: ObjectId) {
     this.client = client ?? new OpenAI({
       baseURL: process.env.LM_STUDIO_BASE_URL || 'http://localhost:1234/v1',
       apiKey: process.env.LM_STUDIO_API_KEY || 'lm-studio',
     });
     this.logger = logger;
+    this.mongoRunId = mongoRunId;
     this.mcp = new MCPClient();
     this.screenshotter = new Screenshotter();
   }
@@ -113,8 +119,9 @@ export class Agent {
       console.log('Tools:', tools.map((t) => t.name).join(', '));
     }
 
-    const visualDisabled = process.env.VISUAL_DISABLED === 'true';
-    if (!visualDisabled) {
+    const screenshotsEnabled = process.env.SCREENSHOTS_ENABLED !== 'false';
+    const snapshotsEnabled = process.env.SNAPSHOTS_ENABLED !== 'false';
+    if (screenshotsEnabled || snapshotsEnabled) {
       await this.screenshotter.init();
     }
 
@@ -129,10 +136,10 @@ export class Agent {
       },
     }));
 
-    const visitSummary = await getVisitSummary();
-    const domContext = await getDomContextSummary();
+    const visitSummary = await getVisitSummary(20);
+    const pageSummary = await getPageSummary(15);
 
-    const extras = [visitSummary, domContext].filter(Boolean).join('\n\n');
+    const extras = [visitSummary, pageSummary].filter(Boolean).join('\n\n');
     const systemContent = extras ? `${SYSTEM_PROMPT}\n\n${extras}` : SYSTEM_PROMPT;
 
     const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
@@ -183,16 +190,20 @@ export class Agent {
         console.log(`\n  → ${toolName}`, this._formatArgs(toolArgs));
 
         let result;
+        let isToolError = false;
+        const toolStartMs = Date.now();
         try {
           result = await this.mcp.callTool(toolName, toolArgs);
         } catch (err) {
           const errorMsg = (err as Error).message;
           result = { content: [{ type: 'text', text: `Error: ${errorMsg}` }] };
+          isToolError = true;
           console.error(`    Error: ${errorMsg}`);
           if (this.logger) {
             await this.logger.logError(toolName, toolArgs, errorMsg);
           }
         }
+        const toolDurationMs = Date.now() - toolStartMs;
 
         // Feed tool result back to LLM
         const content = this._extractTextContent(result);
@@ -200,9 +211,9 @@ export class Agent {
           console.log(`    Result: ${content.slice(0, 300)}${content.length > 300 ? '…' : ''}`);
         }
 
-        // Screenshot on URL change or significant UI state change after an interaction
-        let screenshotResult: { base64: string; mime: string; path: string } | null = null;
-        if (!visualDisabled) {
+        // Capture screenshot/snapshot after each tool call if enabled
+        let screenshotPath: string | undefined;
+        if (screenshotsEnabled || snapshotsEnabled) {
           const snapshotText =
             toolName === 'browser_snapshot'
               ? content
@@ -210,15 +221,34 @@ export class Agent {
 
           if (snapshotText) {
             const isInteraction = INTERACTION_TOOLS.has(toolName);
-            screenshotResult = await this._captureIfPageChanged(toolName, toolArgs, snapshotText, isInteraction);
+            const capture = await this._captureIfPageChanged(
+              toolName, toolArgs, snapshotText, isInteraction,
+              screenshotsEnabled, snapshotsEnabled,
+            );
+            screenshotPath = capture.screenshotPath ?? undefined;
+            // Record visit on URL change
+            if (capture.urlChanged && this.lastPageUrl) {
+              await recordVisit(this.lastPageUrl);
+            }
           }
-        }
-
-        // Record visit whenever the page URL changes (navigate tool or click-triggered redirect)
-        if (screenshotResult && this.lastPageUrl) {
-          await recordVisit(this.lastPageUrl);
         } else if (toolName === 'browser_navigate' && typeof toolArgs.url === 'string') {
           await recordVisit(toolArgs.url);
+        }
+
+        // Persist step to MongoDB
+        if (this.mongoRunId) {
+          this.mongoStepNumber++;
+          await saveStep({
+            runId: this.mongoRunId,
+            stepNumber: this.mongoStepNumber,
+            action: toolName,
+            args: toolArgs,
+            url: this.lastPageUrl,
+            screenshotPath: screenshotPath ?? null,
+            result: content ? content.slice(0, 1000) : null,
+            durationMs: toolDurationMs,
+            isError: isToolError,
+          });
         }
 
         messages.push({
@@ -227,18 +257,30 @@ export class Agent {
           content: content || 'OK',
         });
 
-        // Send screenshot to LLM only when a new page was loaded
-        if (screenshotResult) {
-          messages.push({
-            role: 'user',
-            content: [
-              {
-                type: 'image_url',
-                image_url: { url: `data:${screenshotResult.mime};base64,${screenshotResult.base64}` },
-              },
-            ],
-          });
+        // After navigation: inject stored DOM context for the new URL (if any)
+        if (toolName === 'browser_navigate' && !isToolError) {
+          const navUrl = typeof toolArgs.url === 'string' ? toolArgs.url : this.lastPageUrl;
+          if (navUrl) {
+            const domDetail = await getDomSummaryForUrl(navUrl);
+            if (domDetail) {
+              messages.push({
+                role: 'user',
+                content: `[Stored page context for ${navUrl}]\n${domDetail}`,
+              });
+            }
+          }
         }
+      }
+
+      // Каждые 10 итераций проверяем на зависание агента
+      const loopResult = checkForLoop(iteration, messages);
+      if (loopResult.isLoop) {
+        console.log('\n⚠️  Loop detected! ' + loopResult.summary);
+        console.log('Stopping execution to prevent infinite loop.');
+        if (this.logger) {
+          await this.logger.logResponse('LoopDetector', `LOOP DETECTED: ${loopResult.summary}`);
+        }
+        break;
       }
 
       if (iteration === maxIterations) {
@@ -276,27 +318,33 @@ export class Agent {
     return match?.[1] ?? null;
   }
 
+  // Returns urlChanged flag and optional screenshotPath.
   private async _captureIfPageChanged(
     sourceToolName: string,
     sourceToolArgs: Record<string, unknown>,
     snapshotText: string,
-    isInteraction: boolean
-  ): Promise<{ base64: string; mime: string; path: string } | null> {
+    isInteraction: boolean,
+    screenshotsEnabled: boolean,
+    snapshotsEnabled: boolean,
+  ): Promise<{ urlChanged: boolean; screenshotPath?: string }> {
     this.stepCount++;
-    const snapshotPath = await this.screenshotter.saveSnapshot(
-      this.stepCount,
-      sourceToolName,
-      sourceToolArgs,
-      snapshotText
-    );
-    const filename = this.screenshotter.buildFilename(
-      this.stepCount,
-      sourceToolName,
-      sourceToolArgs,
-      this.screenshotter.buildComparisonKey(sourceToolName, sourceToolArgs),
-      '.txt'
-    );
-    console.log(`    Snapshot: ${snapshotPath ?? `./screenshots/snapshots-incoming/${filename}`}`);
+
+    if (snapshotsEnabled) {
+      const snapshotPath = await this.screenshotter.saveSnapshot(
+        this.stepCount,
+        sourceToolName,
+        sourceToolArgs,
+        snapshotText
+      );
+      const filename = this.screenshotter.buildFilename(
+        this.stepCount,
+        sourceToolName,
+        sourceToolArgs,
+        this.screenshotter.buildComparisonKey(sourceToolName, sourceToolArgs),
+        '.txt'
+      );
+      console.log(`    Snapshot: ${snapshotPath ?? `./screenshots/snapshots-incoming/${filename}`}`);
+    }
 
     const currentUrl = this._extractPageUrl(snapshotText);
     const urlChanged = currentUrl !== null && currentUrl !== this.lastPageUrl;
@@ -305,9 +353,14 @@ export class Agent {
     const uiStateChanged =
       isInteraction && snapshotText !== this.lastCapturedSnapshot;
 
+    if (!screenshotsEnabled) {
+      if (urlChanged) this.lastPageUrl = currentUrl;
+      return { urlChanged };
+    }
+
     if (!urlChanged && !uiStateChanged) {
       console.log(`    Screenshot skipped: page state unchanged (${currentUrl ?? 'URL unknown'})`);
-      return null;
+      return { urlChanged: false };
     }
 
     if (urlChanged) {
@@ -321,44 +374,39 @@ export class Agent {
     const raw = await this.mcp.screenshot();
     if (!raw?.content) {
       console.log('    Screenshot: failed (null result)');
-      return null;
+      return { urlChanged };
     }
 
     const imageContent = raw.content.find((c) => c.type === 'image' || c.type === 'image_url');
     const data = imageContent?.data ?? imageContent?.url;
     if (!data) {
       console.log('    Screenshot: no image data');
-      return null;
+      return { urlChanged };
     }
 
     let base64: string;
-    let mime: string;
     if (data.startsWith('data:image/')) {
-      const [header, payload] = data.split(',');
-      mime   = header.replace('data:', '').replace(';base64', '');
+      const [, payload] = data.split(',');
       base64 = payload ?? '';
     } else {
-      // Raw base64 — detect format from magic bytes
-      const head = Buffer.from(data.slice(0, 16), 'base64');
-      mime   = (head[0] === 0xff && head[1] === 0xd8) ? 'image/jpeg' : 'image/png';
       base64 = data;
     }
 
     if (!base64) {
       console.log('    Screenshot: empty base64 payload');
-      return null;
+      return { urlChanged };
     }
 
     const saved = await this.screenshotter.saveBase64(this.stepCount, sourceToolName, sourceToolArgs, base64, currentUrl);
     if (!saved) {
       console.log('    Screenshot: failed to save');
-      return null;
+      return { urlChanged };
     }
 
     // Update baseline — this snapshot is now what the last screenshot represents
     this.lastCapturedSnapshot = snapshotText;
 
     console.log(`    Screenshot saved: ${saved.path}`);
-    return { base64, mime, path: saved.path };
+    return { urlChanged, screenshotPath: saved.path };
   }
 }

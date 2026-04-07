@@ -2,13 +2,16 @@ import OpenAI from 'openai';
 import sharp from 'sharp';
 
 export async function resolveModel(client: OpenAI): Promise<string> {
-  if (process.env.LM_STUDIO_MODEL) {
-    return process.env.LM_STUDIO_MODEL;
-  }
+  const model = process.env.LM_STUDIO_MAIN_MODEL || process.env.LM_STUDIO_MODEL;
+  if (model) return model;
   const list = await client.models.list();
   const chat = list.data.find((m) => !m.id.includes('embedding'));
   if (!chat) throw new Error('No loaded models found in LM Studio');
   return chat.id;
+}
+
+export function resolveAuxModel(): string | undefined {
+  return process.env.LM_STUDIO_AUX_MODEL;
 }
 
 const VISION_SIZE = parseInt(process.env.VISION_MAX_WIDTH || '512', 10);

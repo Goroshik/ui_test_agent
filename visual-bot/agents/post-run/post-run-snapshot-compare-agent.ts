@@ -12,7 +12,15 @@ export class PostRunCompareAgent {
   }
 
   async process(): Promise<void> {
+    await this.processScreenshots();
+    await this.processSnapshots();
+  }
+
+  async processScreenshots(): Promise<void> {
     await this.screenshotCompareAgent.process();
+  }
+
+  async processSnapshots(): Promise<void> {
     await this.snapshotTextCompareAgent.process();
   }
 }

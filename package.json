@@ -21,6 +21,7 @@
   "dependencies": {
     "@playwright/mcp": "^0.0.29",
     "dotenv": "^16.4.5",
+    "mongodb": "^7.1.1",
     "openai": "^4.77.0",
     "sharp": "^0.34.5"
   },

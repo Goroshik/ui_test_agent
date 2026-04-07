@@ -4,8 +4,9 @@ import { resolve } from 'path';
 import type { DiffResult } from '../utils.js';
 
 export abstract class BaseCompareAgent {
-  private readonly baselineKeepCount = parseInt(process.env.BASELINE_KEEP_COUNT || '2', 10);
+  private readonly baselineKeepCount = parseInt(process.env.BASELINE_KEEP_COUNT || '1', 10);
   private readonly changesKeepCount = parseInt(process.env.CHANGES_KEEP_COUNT || '5', 10);
+  private readonly cleanupChangesAfterProcess = (process.env.CLEANUP_CHANGES_AFTER_PROCESS ?? 'true') === 'true';
 
   protected abstract readonly SCREENSHOTS_DIR: string;
   protected abstract readonly INCOMING_DIR: string;
@@ -72,6 +73,21 @@ export abstract class BaseCompareAgent {
       await this.pruneOldBaselines(key, this.baselineKeepCount);
       await this.pruneOldChanges(key, this.changesKeepCount);
       console.log(`  Changed (${key}) -> saved diff: ${diffDir}`);
+    }
+
+    if (this.cleanupChangesAfterProcess) {
+      await this.clearChangesDir();
+    }
+  }
+
+  private async clearChangesDir(): Promise<void> {
+    if (!existsSync(this.CHANGES_DIR)) return;
+    const entries = await readdir(this.CHANGES_DIR);
+    for (const entry of entries) {
+      await rm(resolve(this.CHANGES_DIR, entry), { recursive: true, force: true });
+    }
+    if (entries.length > 0) {
+      console.log(`  ${this.label}: cleaned up ${entries.length} change(s) from ${this.CHANGES_DIR}`);
     }
   }
 
