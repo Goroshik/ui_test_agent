@@ -1,6 +1,7 @@
 import OpenAI from 'openai';
 import { resolveModel } from '../../utils.js';
-import { getVisitSummary, getPageSummary } from '../../memory.js';
+import { getVisitSummary } from '../../memory.js';
+import { getPageSummary } from '../../registry-context.js';
 
 const PLANNER_SYSTEM_PROMPT = `You are a browser task planner. Your job is to analyze the user's goal and produce a precise, step-by-step execution plan for a browser automation agent.
 
@@ -40,14 +41,16 @@ Rules:
 export class PlannerAgent {
   private client: OpenAI;
   private model: string | null = null;
+  private modelOverride?: string;
 
-  constructor(client: OpenAI) {
+  constructor(client: OpenAI, modelOverride?: string) {
     this.client = client;
+    this.modelOverride = modelOverride;
   }
 
   async plan(userTask: string, memoryContext?: string): Promise<string> {
     if (!this.model) {
-      this.model = await resolveModel(this.client);
+      this.model = await resolveModel(this.client, this.modelOverride);
     }
 
     // Priority: rich analysis → known pages summary → basic URL list

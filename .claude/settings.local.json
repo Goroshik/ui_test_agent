@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(du -sh D:/work/agent_for_tests/data/registry/*)",
+      "Bash(npx tsc:*)"
+    ]
+  }
+}

@@ -1,7 +1,7 @@
 import OpenAI from 'openai';
 import { parseDiffJson, resizeForVision, type DiffResult } from './utils.js';
 import { AttentionMemory } from './attention-memory.js';
-import { isDBConnected, dbUpsertContentSummary, dbGetContentSummary } from './db.js';
+import { getContentSummary, upsertContentSummary } from './pipeline/content-summary-store.js';
 
 function detectMime(base64: string): string {
   const head = Buffer.from(base64.slice(0, 16), 'base64');
@@ -22,57 +22,46 @@ export class VisualDiff {
 
   constructor(
     private readonly client: OpenAI,
-    private readonly model: string
+    private readonly model: string,
   ) {
     this.memory = new AttentionMemory(client, model, 'screenshot');
   }
 
+  /**
+   * Batched approach: describe each image individually → compare text descriptions.
+   * Baseline description is cached in data/content-summaries.json to avoid
+   * re-sending the baseline image on every comparison run.
+   */
   async compare(oldImageBase64: string, newImageBase64: string, key: string): Promise<DiffResult> {
-    // Batched approach: describe each image individually → compare text descriptions.
-    // Falls back to direct image-to-image compare when DB unavailable.
-    if (isDBConnected()) {
-      return this.compareBatched(oldImageBase64, newImageBase64, key);
-    }
-
-    return this.compareFull(oldImageBase64, newImageBase64, key);
-  }
-
-  // ─── Batched (DB-backed) approach ────────────────────────────────────────────
-
-  private async compareBatched(
-    oldImageBase64: string,
-    newImageBase64: string,
-    key: string,
-  ): Promise<DiffResult> {
     const guidance = await this.memory.getGuidance();
 
     const newResized = await resizeForVision(Buffer.from(newImageBase64, 'base64'))
       .then((b) => b.toString('base64'));
 
-    // Step 1: get or create baseline description (one LLM vision call)
-    let oldDescription = await dbGetContentSummary(key, 'screenshot');
+    // Step 1: get or create baseline description
+    let oldDescription = await getContentSummary(key, 'screenshot');
     if (!oldDescription) {
       const oldResized = await resizeForVision(Buffer.from(oldImageBase64, 'base64'))
         .then((b) => b.toString('base64'));
-      oldDescription = await this.describeScreenshot(oldResized, key);
-      await dbUpsertContentSummary(key, 'screenshot', oldDescription);
+      oldDescription = await this._describe(oldResized, key);
+      await upsertContentSummary(key, 'screenshot', oldDescription);
     }
 
-    // Step 2: describe incoming screenshot (one LLM vision call)
-    const newDescription = await this.describeScreenshot(newResized, key);
+    // Step 2: describe incoming screenshot
+    const newDescription = await this._describe(newResized, key);
 
-    // Step 3: compare descriptions (text only, tiny context)
-    const result = await this.compareDescriptions(oldDescription, newDescription, key, guidance);
+    // Step 3: compare descriptions (text only, small context)
+    const result = await this._compareDescriptions(oldDescription, newDescription, key, guidance);
 
     if (result.changed) {
-      await dbUpsertContentSummary(key, 'screenshot', newDescription);
+      await upsertContentSummary(key, 'screenshot', newDescription);
       await this.memory.rememberChange(key, result.summary);
     }
 
     return result;
   }
 
-  private async describeScreenshot(resizedBase64: string, key: string): Promise<string> {
+  private async _describe(resizedBase64: string, key: string): Promise<string> {
     try {
       const response = await this.client.chat.completions.create({
         model: this.model,
@@ -94,13 +83,12 @@ export class VisualDiff {
       });
       return response.choices[0]?.message?.content?.trim() ?? '';
     } catch (err) {
-      const message = (err as Error).message ?? String(err);
-      console.warn(`  VisualDiff: describe error: ${message}`);
+      console.warn(`  VisualDiff: describe error: ${(err as Error).message}`);
       return '';
     }
   }
 
-  private async compareDescriptions(
+  private async _compareDescriptions(
     oldDescription: string,
     newDescription: string,
     key: string,
@@ -129,69 +117,8 @@ export class VisualDiff {
       const text = response.choices[0]?.message?.content?.trim() ?? '';
       return parseDiffJson(text) ?? { changed: true, summary: text || 'Non-JSON response; treated as changed.' };
     } catch (err) {
-      const message = (err as Error).message ?? String(err);
-      console.warn(`  VisualDiff: compare descriptions error: ${message}`);
-      return { changed: true, summary: `Compare unavailable: ${message}` };
+      console.warn(`  VisualDiff: compare error: ${(err as Error).message}`);
+      return { changed: true, summary: `Compare unavailable: ${(err as Error).message}` };
     }
-  }
-
-  // ─── Full-content approach (fallback, no DB) ─────────────────────────────────
-
-  private async compareFull(
-    oldImageBase64: string,
-    newImageBase64: string,
-    key: string,
-  ): Promise<DiffResult> {
-    const guidance = await this.memory.getGuidance();
-
-    const [oldResized, newResized] = await Promise.all([
-      resizeForVision(Buffer.from(oldImageBase64, 'base64')).then((b) => b.toString('base64')),
-      resizeForVision(Buffer.from(newImageBase64, 'base64')).then((b) => b.toString('base64')),
-    ]);
-
-    let text: string;
-    try {
-      const response = await this.client.chat.completions.create({
-        model: this.model,
-        temperature: 0,
-        messages: [
-          {
-            role: 'system',
-            content:
-              'Compare two webpage screenshots. Return strict JSON only: {"changed":boolean,"summary":string}. Summary must be short.' +
-              (guidance ? `\n\nPast attention rules:\n${guidance}` : ''),
-          },
-          {
-            role: 'user',
-            content: [
-              { type: 'text', text: 'Old screenshot:' },
-              { type: 'image_url', image_url: { url: toDataUrl(oldResized) } },
-              { type: 'text', text: 'New screenshot:' },
-              { type: 'image_url', image_url: { url: toDataUrl(newResized) } },
-            ],
-          },
-        ],
-      });
-      text = response.choices[0]?.message?.content?.trim() ?? '';
-    } catch (err) {
-      const status = (err as { status?: number }).status;
-      const message = (err as Error).message ?? String(err);
-      console.warn(`  VisualDiff: API error (${status ?? 'unknown'}): ${message}`);
-      return {
-        changed: true,
-        summary: `Vision comparison unavailable (${status ?? 'error'}): ${message}`,
-      };
-    }
-
-    const result = parseDiffJson(text) ?? {
-      changed: true,
-      summary: text || 'Model returned non-JSON response; treated as changed.',
-    };
-
-    if (result.changed) {
-      await this.memory.rememberChange(key, result.summary);
-    }
-
-    return result;
   }
 }

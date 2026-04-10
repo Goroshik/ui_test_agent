@@ -1,7 +1,8 @@
 import OpenAI from 'openai';
 import sharp from 'sharp';
 
-export async function resolveModel(client: OpenAI): Promise<string> {
+export async function resolveModel(client: OpenAI, override?: string): Promise<string> {
+  if (override) return override;
   const model = process.env.LM_STUDIO_MAIN_MODEL || process.env.LM_STUDIO_MODEL;
   if (model) return model;
   const list = await client.models.list();

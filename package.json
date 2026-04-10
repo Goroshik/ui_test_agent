@@ -6,6 +6,7 @@
   "main": "visual-bot/index.ts",
   "scripts": {
     "start": "tsx visual-bot/index.ts",
+    "pipeline": "tsx visual-bot/run-pipeline.ts",
     "analyze-memory": "tsx visual-bot/analyze-memory.ts",
     "analyze-memory:force": "tsx visual-bot/analyze-memory.ts --force",
     "analyze-dom-memory": "tsx visual-bot/analyze-dom-memory.ts",

@@ -4,11 +4,18 @@ import { resolve } from 'path';
 import { ObjectId } from 'mongodb';
 import { isDBConnected, dbSaveLog } from './db.js';
 
+export interface TokenUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+}
+
 export class RunLogger {
   private readonly logPath: string;
   private readonly errorPath: string;
   private initialized = false;
   private mongoRunId?: ObjectId;
+  private tokenUsage: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
   constructor(runId: string, mongoRunId?: ObjectId) {
     const logsDir = resolve(process.cwd(), 'logs');
@@ -54,13 +61,26 @@ export class RunLogger {
     }
   }
 
+  addTokenUsage(usage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }): void {
+    this.tokenUsage.promptTokens += usage.prompt_tokens ?? 0;
+    this.tokenUsage.completionTokens += usage.completion_tokens ?? 0;
+    this.tokenUsage.totalTokens += usage.total_tokens ?? 0;
+  }
+
+  getTokenUsage(): TokenUsage {
+    return { ...this.tokenUsage };
+  }
+
   async logEnd(): Promise<void> {
     if (!this.initialized) return;
+    const usage = this.tokenUsage;
+    const usageLine = `Tokens — prompt: ${usage.promptTokens}, completion: ${usage.completionTokens}, total: ${usage.totalTokens}\n`;
     await appendFile(
       this.logPath,
-      `=== RUN END ===\nTime: ${new Date().toISOString()}\n`,
+      `=== RUN END ===\nTime: ${new Date().toISOString()}\n${usageLine}`,
       'utf-8'
     );
+    console.log(`[Logger] ${usageLine.trim()}`);
   }
 
   get path(): string {
@@ -78,11 +98,16 @@ export function attachLogger(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (client.chat.completions as any).create = async (...args: unknown[]) => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const result = await (original as any)(...args);
-    const content: string | undefined = (result as { choices?: { message?: { content?: string } }[] })
-      ?.choices?.[0]?.message?.content ?? undefined;
+    const result = await (original as any)(...args) as {
+      choices?: { message?: { content?: string } }[];
+      usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+    };
+    const content = result?.choices?.[0]?.message?.content ?? undefined;
     if (content) {
       await logger.logResponse(agentName, content);
+    }
+    if (result?.usage) {
+      logger.addTokenUsage(result.usage);
     }
     return result;
   };

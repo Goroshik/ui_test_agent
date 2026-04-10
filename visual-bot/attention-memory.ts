@@ -1,15 +1,7 @@
 import OpenAI from 'openai';
-import { mkdir, readFile, writeFile } from 'fs/promises';
+import { readFile, writeFile, mkdir } from 'fs/promises';
 import { existsSync } from 'fs';
-import { dirname, resolve } from 'path';
-import {
-  isDBConnected,
-  dbUpsertAttentionEntry,
-  dbGetAttentionEntries,
-  dbCountAttentionEntries,
-  dbPruneAttentionEntries,
-  type AttentionEntryDoc,
-} from './db.js';
+import { resolve, dirname } from 'path';
 
 type MemoryKind = 'screenshot' | 'snapshot';
 
@@ -26,47 +18,39 @@ interface RulePayload {
   rule?: unknown;
 }
 
+const FILE_PATH = resolve(process.cwd(), 'data', 'attention-memory.json');
+
 export class AttentionMemory {
-  private readonly filePath = resolve(process.cwd(), 'screenshots', 'attention-memory.json');
   private readonly maxEntries = parseInt(process.env.ATTENTION_MEMORY_MAX || '200', 10);
 
   constructor(
     private readonly client: OpenAI,
     private readonly model: string,
-    private readonly kind: MemoryKind
+    private readonly kind: MemoryKind,
   ) {}
 
   async getGuidance(limit = 8): Promise<string> {
-    const all = await this._loadEntries();
-    const entries = all
-      .filter((e) => e.kind === this.kind)
-      .slice(-limit);
-
+    const all = await this._load();
+    const entries = all.filter((e) => e.kind === this.kind).slice(-limit);
     if (entries.length === 0) return '';
-
-    return entries
-      .map((e, i) => `${i + 1}. ${e.rule}`)
-      .join('\n');
+    return entries.map((e, i) => `${i + 1}. ${e.rule}`).join('\n');
   }
 
   async rememberChange(
     key: string,
     summary: string,
     oldSample?: string,
-    newSample?: string
+    newSample?: string,
   ): Promise<void> {
     const cleanSummary = (summary || '').trim();
     if (!cleanSummary) return;
 
-    const rule = await this.summarizeRule(key, cleanSummary, oldSample, newSample);
+    const rule = await this._summarizeRule(key, cleanSummary, oldSample, newSample);
     if (!rule) return;
 
-    const all = await this._loadEntries();
+    const all = await this._load();
     const duplicate = all.find(
-      (e) =>
-        e.kind === this.kind &&
-        e.key === key &&
-        e.rule.toLowerCase() === rule.toLowerCase()
+      (e) => e.kind === this.kind && e.key === key && e.rule.toLowerCase() === rule.toLowerCase(),
     );
     if (duplicate) return;
 
@@ -79,32 +63,17 @@ export class AttentionMemory {
       createdAt: new Date().toISOString(),
     };
 
-    if (isDBConnected()) {
-      await dbUpsertAttentionEntry(entry as AttentionEntryDoc);
-      await dbPruneAttentionEntries(this.maxEntries);
-    } else {
-      const capped = [...all, entry].slice(-Math.max(1, this.maxEntries));
-      await this._saveToFile(capped);
-    }
+    const capped = [...all, entry].slice(-Math.max(1, this.maxEntries));
+    await this._save(capped);
   }
 
-  private async _loadEntries(): Promise<AttentionMemoryEntry[]> {
-    if (isDBConnected()) {
-      return dbGetAttentionEntries() as Promise<AttentionMemoryEntry[]>;
-    }
-    return this._loadFromFile();
-  }
-
-  private async summarizeRule(
+  private async _summarizeRule(
     key: string,
     summary: string,
     oldSample?: string,
-    newSample?: string
+    newSample?: string,
   ): Promise<string> {
     try {
-      const oldCut = oldSample ? oldSample.slice(0, 1800) : '';
-      const newCut = newSample ? newSample.slice(0, 1800) : '';
-
       const response = await this.client.chat.completions.create({
         model: this.model,
         temperature: 0,
@@ -118,64 +87,56 @@ export class AttentionMemory {
           {
             role: 'user',
             content:
-              `Type: ${this.kind}\n` +
-              `Key: ${key}\n` +
-              `Detected summary: ${summary}\n` +
-              (oldCut ? `Old sample:\n${oldCut}\n` : '') +
-              (newCut ? `New sample:\n${newCut}\n` : ''),
+              `Type: ${this.kind}\nKey: ${key}\nDetected summary: ${summary}\n` +
+              (oldSample ? `Old sample:\n${oldSample.slice(0, 1800)}\n` : '') +
+              (newSample ? `New sample:\n${newSample.slice(0, 1800)}\n` : ''),
           },
         ],
       });
 
       const text = response.choices[0]?.message?.content?.trim() ?? '';
-      const payload = this.parseRulePayload(text);
+      const payload = this._parseJson(text);
       const rule = typeof payload?.rule === 'string' ? payload.rule.trim() : '';
-      return rule || this.fallbackRule(summary);
+      return rule || this._fallbackRule(summary);
     } catch {
-      return this.fallbackRule(summary);
+      return this._fallbackRule(summary);
     }
   }
 
-  private fallbackRule(summary: string): string {
+  private _fallbackRule(summary: string): string {
     const trimmed = summary.trim().replace(/\s+/g, ' ');
     return trimmed.length > 180 ? `${trimmed.slice(0, 177)}...` : trimmed;
   }
 
-  private parseRulePayload(input: string): RulePayload | null {
+  private _parseJson(input: string): RulePayload | null {
     if (!input) return null;
-    const firstBrace = input.indexOf('{');
-    const lastBrace = input.lastIndexOf('}');
-    const payload = firstBrace >= 0 && lastBrace > firstBrace
-      ? input.slice(firstBrace, lastBrace + 1)
-      : input;
+    const start = input.indexOf('{');
+    const end = input.lastIndexOf('}');
     try {
-      return JSON.parse(payload) as RulePayload;
+      return JSON.parse(start >= 0 && end > start ? input.slice(start, end + 1) : input) as RulePayload;
     } catch {
       return null;
     }
   }
 
-  private async _loadFromFile(): Promise<AttentionMemoryEntry[]> {
-    if (!existsSync(this.filePath)) return [];
+  private async _load(): Promise<AttentionMemoryEntry[]> {
+    if (!existsSync(FILE_PATH)) return [];
     try {
-      const raw = await readFile(this.filePath, 'utf-8');
-      const parsed = JSON.parse(raw) as unknown;
+      const parsed = JSON.parse(await readFile(FILE_PATH, 'utf-8')) as unknown;
       if (!Array.isArray(parsed)) return [];
-      return parsed.filter(this.isEntry);
+      return parsed.filter(this._isEntry);
     } catch {
       return [];
     }
   }
 
-  private async _saveToFile(entries: AttentionMemoryEntry[]): Promise<void> {
-    const dir = dirname(this.filePath);
-    if (!existsSync(dir)) {
-      await mkdir(dir, { recursive: true });
-    }
-    await writeFile(this.filePath, JSON.stringify(entries, null, 2), 'utf-8');
+  private async _save(entries: AttentionMemoryEntry[]): Promise<void> {
+    const dir = dirname(FILE_PATH);
+    if (!existsSync(dir)) await mkdir(dir, { recursive: true });
+    await writeFile(FILE_PATH, JSON.stringify(entries, null, 2), 'utf-8');
   }
 
-  private isEntry(value: unknown): value is AttentionMemoryEntry {
+  private _isEntry(value: unknown): value is AttentionMemoryEntry {
     const v = value as Partial<AttentionMemoryEntry>;
     return Boolean(
       v &&
@@ -184,7 +145,7 @@ export class AttentionMemory {
       typeof v.key === 'string' &&
       typeof v.summary === 'string' &&
       typeof v.rule === 'string' &&
-      typeof v.createdAt === 'string'
+      typeof v.createdAt === 'string',
     );
   }
 }

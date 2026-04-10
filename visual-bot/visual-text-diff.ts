@@ -1,7 +1,7 @@
 import OpenAI from 'openai';
 import { parseDiffJson, type DiffResult } from './utils.js';
 import { AttentionMemory } from './attention-memory.js';
-import { isDBConnected, dbUpsertContentSummary, dbGetContentSummary } from './db.js';
+import { getContentSummary, upsertContentSummary } from './pipeline/content-summary-store.js';
 
 export type { DiffResult as TextDiffResult };
 
@@ -10,24 +10,17 @@ export class VisualTextDiff {
 
   constructor(
     private readonly client: OpenAI,
-    private readonly model: string
+    private readonly model: string,
   ) {
     this.memory = new AttentionMemory(client, model, 'snapshot');
   }
 
   async compare(oldSnapshot: string, newSnapshot: string, key: string): Promise<DiffResult> {
     const deterministicChanged = this.hasDeterministicChange(oldSnapshot, newSnapshot);
-
-    // Batched approach: summarize each snapshot individually → compare compact summaries.
-    // Falls back to full-content compare when DB is unavailable.
-    if (isDBConnected()) {
-      return this.compareBatched(oldSnapshot, newSnapshot, key, deterministicChanged);
-    }
-
-    return this.compareFull(oldSnapshot, newSnapshot, key, deterministicChanged);
+    return this.compareBatched(oldSnapshot, newSnapshot, key, deterministicChanged);
   }
 
-  // ─── Batched (DB-backed) approach ────────────────────────────────────────────
+  // ─── Batched approach (file-cached summaries) ─────────────────────────────────
 
   private async compareBatched(
     oldSnapshot: string,
@@ -38,10 +31,10 @@ export class VisualTextDiff {
     const guidance = await this.memory.getGuidance();
 
     // Step 1: get or create baseline summary (one LLM call, small context)
-    let oldSummary = await dbGetContentSummary(key, 'snapshot');
+    let oldSummary = await getContentSummary(key, 'snapshot');
     if (!oldSummary) {
       oldSummary = await this.summarizeSnapshot(oldSnapshot, key);
-      await dbUpsertContentSummary(key, 'snapshot', oldSummary);
+      await upsertContentSummary(key, 'snapshot', oldSummary);
     }
 
     // Step 2: summarize incoming (one LLM call, small context)
@@ -56,7 +49,7 @@ export class VisualTextDiff {
     }
 
     if (result.changed) {
-      await dbUpsertContentSummary(key, 'snapshot', newSummary);
+      await upsertContentSummary(key, 'snapshot', newSummary);
       await this.memory.rememberChange(key, result.summary, oldSnapshot, newSnapshot);
     }
 

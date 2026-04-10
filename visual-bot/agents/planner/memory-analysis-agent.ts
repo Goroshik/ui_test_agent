@@ -1,5 +1,5 @@
 import OpenAI from 'openai';
-import { getPages, PageRecord } from '../../memory.js';
+import { getRegistryPages, type RegistryPageRecord } from '../../registry-context.js';
 import { resolveModel } from '../../utils.js';
 
 const MAX_PAGES_IN_CONTEXT = 12;
@@ -7,7 +7,7 @@ const MAX_PAGES_IN_CONTEXT = 12;
 const ANALYSIS_PROMPT = `You are a navigation analyst for a browser automation agent.
 
 IMPORTANT: Always respond in Russian.
-You have a knowledge base of previously analyzed pages (URL → what's on the page).
+You have a knowledge base of previously analyzed pages (URL path → components on the page).
 Given a task, identify relevant pages and suggest an optimal navigation path.
 
 Return plain text in this structure:
@@ -23,11 +23,8 @@ Known shortcuts:
 
 If no pages in the knowledge base are relevant, write: NO_RELEVANT_MEMORY`;
 
-function scorePageRelevance(url: string, page: PageRecord, keywords: string[]): number {
-  const text = [url, page.title, page.purpose, page.navigation, page.forms, page.keyActions, page.sections]
-    .filter(Boolean)
-    .join(' ')
-    .toLowerCase();
+function scorePageRelevance(record: RegistryPageRecord, keywords: string[]): number {
+  const text = [record.path, record.components].join(' ').toLowerCase();
   return keywords.reduce((score, kw) => score + (text.includes(kw) ? 1 : 0), 0);
 }
 
@@ -39,46 +36,37 @@ function extractKeywords(task: string): string[] {
 }
 
 export class MemoryAnalysisAgent {
-  constructor(private readonly client: OpenAI) {}
+  constructor(private readonly client: OpenAI, private readonly modelOverride?: string) {}
 
   async analyze(userTask: string): Promise<string> {
-    const pages = await getPages();
-    const allEntries = Object.entries(pages);
+    const allPages = await getRegistryPages();
 
-    if (allEntries.length === 0) {
+    if (allPages.length === 0) {
       console.log('[MemoryAnalysis] No page knowledge yet — skipping.');
       return '';
     }
 
     const keywords = extractKeywords(userTask);
 
-    // Score and sort by relevance, fall back to recency for ties
-    const scored = allEntries
-      .map(([url, p]) => ({ url, p, score: scorePageRelevance(url, p, keywords) }))
-      .sort((a, b) => b.score - a.score || b.p.analyzedAt.localeCompare(a.p.analyzedAt));
+    // Score by relevance, fall back to recency for ties
+    const scored = allPages
+      .map((p) => ({ p, score: scorePageRelevance(p, keywords) }))
+      .sort((a, b) => b.score - a.score || b.p.lastSeen.localeCompare(a.p.lastSeen));
 
-    const entries = scored.slice(0, MAX_PAGES_IN_CONTEXT).map(({ url, p }) => [url, p] as [string, PageRecord]);
+    const entries = scored.slice(0, MAX_PAGES_IN_CONTEXT).map(({ p }) => p);
 
     console.log(
-      `\n[MemoryAnalysis] Consulting ${entries.length}/${allEntries.length} page(s) (filtered by relevance)...`
+      `\n[MemoryAnalysis] Consulting ${entries.length}/${allPages.length} page(s) (filtered by relevance)...`
     );
 
     const knowledgeBase = entries
-      .map(([url, p]) => [
-        `URL: ${url}`,
-        p.title      ? `Title: ${p.title}`           : '',
-        p.purpose    ? `Purpose: ${p.purpose}`        : '',
-        p.navigation ? `Navigation: ${p.navigation}`  : '',
-        p.forms      ? `Forms: ${p.forms}`            : '',
-        p.keyActions ? `Key actions: ${p.keyActions}` : '',
-        p.sections   ? `Sections: ${p.sections}`      : '',
-      ].filter(Boolean).join('\n'))
+      .map((p) => `Path: ${p.path}\nComponents: ${p.components || 'none'}`)
       .join('\n\n---\n\n');
 
     let analysis: string;
     try {
       const response = await this.client.chat.completions.create({
-        model: await resolveModel(this.client),
+        model: await resolveModel(this.client, this.modelOverride),
         temperature: 0.2,
         messages: [
           { role: 'system', content: ANALYSIS_PROMPT },

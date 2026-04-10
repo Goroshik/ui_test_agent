@@ -1,13 +1,16 @@
 import OpenAI from 'openai';
 import { ObjectId } from 'mongodb';
+import { resolve } from 'path';
 import { MCPClient } from '../../mcp-client.js';
 import { Screenshotter } from '../../screenshotter.js';
 import { resolveModel } from '../../utils.js';
-import { recordVisit, getVisitSummary, getPageSummary } from '../../memory.js';
-import { getDomSummaryForUrl } from '../../dom-memory.js';
+import { recordVisit, getVisitSummary } from '../../memory.js';
+import { getPageSummary, getComponentContextForUrl, toolGetPageComponents, toolSearchComponents } from '../../registry-context.js';
 import { RunLogger } from '../../run-logger.js';
 import { checkForLoop } from '../../loop-detector.js';
 import { saveStep } from '../../db.js';
+import { SessionCollector } from '../../pipeline/session-collector.js';
+import type { ActionData, ActionType } from '../../pipeline/types.js';
 
 // ... (schemas and prompt omitted for brevity in thought, but included in actual replacement)
 
@@ -35,7 +38,24 @@ const TOOL_SCHEMAS: Record<string, OpenAI.FunctionParameters> = {
   browser_network_requests:  { type: 'object', properties: {} },
   browser_console_messages:  { type: 'object', properties: {} },
   browser_generate_playwright_test: { type: 'object', properties: { name: { type: 'string' }, description: { type: 'string' }, steps: { type: 'array', items: { type: 'string' } } }, required: ['name', 'description', 'steps'] },
+  // ── Registry tools (handled locally, not via MCP) ──
+  registry_get_page_components: {
+    type: 'object',
+    properties: {
+      page: { type: 'string', description: 'Page path to look up, e.g. /v1/login or /member-hr/home' },
+    },
+    required: ['page'],
+  },
+  registry_search_components: {
+    type: 'object',
+    properties: {
+      query: { type: 'string', description: 'Keyword to search in component labels and IDs' },
+    },
+    required: ['query'],
+  },
 };
+
+const REGISTRY_TOOLS = new Set(['registry_get_page_components', 'registry_search_components']);
 
 const SYSTEM_PROMPT = `You are a browser automation agent. Complete the user's task step by step using the available browser tools.
 
@@ -67,6 +87,15 @@ browser_wait_for({ text: "Success" })        // wait for text to appear
 browser_wait_for({ textGone: "Loading..." }) // wait for text to disappear
 browser_wait_for({ time: 2 })                // wait N seconds
 
+## Registry lookup tools
+
+Use these tools to find stored component metadata (selectors, actions, assertions) without reading large files:
+
+- **registry_get_page_components({ page: "/v1/login" })** — returns all known components for a page with selectors, expected actions, and assertions
+- **registry_search_components({ query: "email" })** — search components by label or ID keyword across all pages
+
+Use these when you need to write a test or verify a selector for a specific page.
+
 ## General rules
 - ALWAYS call browser_snapshot before any click/type/select — refs change after navigation
 - Never guess a ref — only use refs that appear in the latest snapshot
@@ -82,6 +111,49 @@ const INTERACTION_TOOLS = new Set([
   'browser_select_option',
 ]);
 
+// Tools that represent a meaningful user action and should be recorded as steps
+const ACTION_TOOLS = new Set([
+  'browser_click',
+  'browser_type',
+  'browser_navigate',
+  'browser_select_option',
+  'browser_hover',
+]);
+
+function buildActionData(toolName: string, toolArgs: Record<string, unknown>): ActionData {
+  const typeMap: Record<string, ActionType> = {
+    browser_click: 'click',
+    browser_type: 'fill',
+    browser_navigate: 'navigate',
+    browser_select_option: 'select',
+    browser_hover: 'hover',
+    browser_press_key: 'press_key',
+  };
+
+  const type: ActionType = typeMap[toolName] ?? 'other';
+  const elementName = typeof toolArgs.element === 'string' ? toolArgs.element : undefined;
+  const ref = typeof toolArgs.ref === 'string' ? toolArgs.ref : undefined;
+  const text = typeof toolArgs.text === 'string' ? toolArgs.text : undefined;
+  const url = typeof toolArgs.url === 'string' ? toolArgs.url : undefined;
+  const values = Array.isArray(toolArgs.values) ? (toolArgs.values as string[]).join(', ') : undefined;
+
+  return {
+    type,
+    description: elementName
+      ? `${type} on "${elementName}"`
+      : url
+        ? `navigate to ${url}`
+        : `${type}`,
+    element: elementName || ref
+      ? {
+          ariaName: elementName ?? null,
+          ref: ref ?? null,
+        }
+      : undefined,
+    value: text ?? url ?? values,
+  };
+}
+
 export class Agent {
   private client: OpenAI;
   private logger?: RunLogger;
@@ -94,8 +166,17 @@ export class Agent {
   private lastPageUrl: string | null = null;
   // Snapshot text at the moment of the last screenshot — used to detect UI state changes
   private lastCapturedSnapshot: string | null = null;
+  private stopRequested = false;
 
-  constructor(client?: OpenAI, logger?: RunLogger, mongoRunId?: ObjectId) {
+  // Pipeline session collection
+  private collector: SessionCollector | null = null;
+  private lastAriaContent: string | null = null;
+  private activeStepId: string | null = null;
+  // Network requests seen before the current action (for delta tracking)
+  private seenNetworkUrls = new Set<string>();
+  private lastScreenshotPath: string | null = null;
+
+  constructor(client?: OpenAI, logger?: RunLogger, mongoRunId?: ObjectId, modelOverride?: string) {
     this.client = client ?? new OpenAI({
       baseURL: process.env.LM_STUDIO_BASE_URL || 'http://localhost:1234/v1',
       apiKey: process.env.LM_STUDIO_API_KEY || 'lm-studio',
@@ -104,10 +185,27 @@ export class Agent {
     this.mongoRunId = mongoRunId;
     this.mcp = new MCPClient();
     this.screenshotter = new Screenshotter();
+    if (modelOverride) this.model = modelOverride;
+  }
+
+  /** Returns the session directory path if a collector was initialized. */
+  getSessionDirectory(): string | null {
+    return this.collector?.sessionDirectory ?? null;
+  }
+
+  /** Returns the path of the last screenshot taken during this run. */
+  getLastScreenshotPath(): string | null {
+    return this.lastScreenshotPath;
+  }
+
+  /** Request graceful stop — agent will finish the current step and then halt. */
+  requestStop(): void {
+    this.stopRequested = true;
+    console.log('\n[⏸] Stop requested — finishing current step, then halting...');
   }
 
   async run(prompt: string): Promise<void> {
-    this.model = await resolveModel(this.client);
+    if (!this.model) this.model = await resolveModel(this.client);
     console.log(`\nTask: ${prompt}`);
     console.log('─'.repeat(50));
     console.log(`Model: ${this.model}`);
@@ -117,6 +215,18 @@ export class Agent {
     console.log(`Connected. ${tools.length} tools available.`);
     if (process.env.DEBUG) {
       console.log('Tools:', tools.map((t) => t.name).join(', '));
+    }
+
+    // Initialize pipeline session collector
+    if (process.env.PIPELINE_ENABLED !== 'false') {
+      const sessionId = new Date()
+        .toISOString()
+        .replace(/[:.]/g, '-')
+        .replace('T', '_')
+        .slice(0, 19);
+      const dataDir = resolve(process.cwd(), 'data');
+      this.collector = new SessionCollector(dataDir, sessionId);
+      await this.collector.init(prompt, '');
     }
 
     const screenshotsEnabled = process.env.SCREENSHOTS_ENABLED !== 'false';
@@ -150,6 +260,10 @@ export class Agent {
     const maxIterations = parseInt(process.env.MAX_ITERATIONS || '60', 10);
 
     for (let iteration = 1; iteration <= maxIterations; iteration++) {
+      if (this.stopRequested) {
+        console.log('\n[⏸] Agent stopped by user request.');
+        break;
+      }
       console.log(`\n[Step ${iteration}] Thinking...`);
 
       const response = await this.client.chat.completions.create({
@@ -189,6 +303,28 @@ export class Agent {
 
         console.log(`\n  → ${toolName}`, this._formatArgs(toolArgs));
 
+        // Registry tools are handled locally — skip MCP entirely
+        if (REGISTRY_TOOLS.has(toolName)) {
+          let registryResult: string;
+          try {
+            if (toolName === 'registry_get_page_components') {
+              registryResult = await toolGetPageComponents(String(toolArgs.page ?? ''));
+            } else {
+              registryResult = await toolSearchComponents(String(toolArgs.query ?? ''));
+            }
+          } catch (err) {
+            registryResult = `Registry error: ${(err as Error).message}`;
+          }
+          console.log(`    Result: ${registryResult.slice(0, 300)}${registryResult.length > 300 ? '…' : ''}`);
+          messages.push({ role: 'tool', tool_call_id: toolCall.id, content: registryResult });
+          continue;
+        }
+
+        // Pipeline: start step collection BEFORE executing action tools
+        if (this.collector && ACTION_TOOLS.has(toolName)) {
+          await this._beginCollectorStep(toolName, toolArgs);
+        }
+
         let result;
         let isToolError = false;
         const toolStartMs = Date.now();
@@ -209,6 +345,16 @@ export class Agent {
         const content = this._extractTextContent(result);
         if (content) {
           console.log(`    Result: ${content.slice(0, 300)}${content.length > 300 ? '…' : ''}`);
+        }
+
+        // Pipeline: cache ARIA content for use as "before" on next action
+        if (toolName === 'browser_snapshot' && !isToolError && content) {
+          this.lastAriaContent = content;
+        }
+
+        // Pipeline: complete step AFTER action executes
+        if (this.collector && this.activeStepId && ACTION_TOOLS.has(toolName)) {
+          await this._endCollectorStep(isToolError);
         }
 
         // Capture screenshot/snapshot after each tool call if enabled
@@ -261,7 +407,7 @@ export class Agent {
         if (toolName === 'browser_navigate' && !isToolError) {
           const navUrl = typeof toolArgs.url === 'string' ? toolArgs.url : this.lastPageUrl;
           if (navUrl) {
-            const domDetail = await getDomSummaryForUrl(navUrl);
+            const domDetail = await getComponentContextForUrl(navUrl);
             if (domDetail) {
               messages.push({
                 role: 'user',
@@ -289,6 +435,10 @@ export class Agent {
     }
 
     this.mcp.disconnect();
+
+    if (this.collector) {
+      await this.collector.finishSession('completed');
+    }
   }
 
   private _extractTextContent(result: unknown): string {
@@ -311,6 +461,112 @@ export class Agent {
       .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
       .join(', ');
     return `{ ${entries} }`;
+  }
+
+  // ─── Pipeline helpers ────────────────────────────────────────────────────────
+
+  /**
+   * Parses the Playwright MCP ARIA snapshot text to find structured role/name for a given ref.
+   * Snapshot lines look like:  "  - button \"Submit\" [ref=e12]"
+   * Returns null fields if the ref is not found or has no accessible name.
+   */
+  private _parseElementFromSnapshot(
+    content: string,
+    ref: string,
+  ): { ariaRole: string | null; ariaName: string | null } {
+    for (const line of content.split('\n')) {
+      if (!line.includes(`[ref=${ref}]`) && !line.includes(`ref="${ref}"`)) continue;
+      // Pattern: "  - button "Submit" [ref=e12]"
+      const withName = line.match(/-\s+([a-z][\w-]*)\s+"([^"]+)"/i);
+      if (withName) return { ariaRole: withName[1].toLowerCase(), ariaName: withName[2] };
+      // Pattern: "  - button [ref=e12]" (no accessible name)
+      const noName = line.match(/-\s+([a-z][\w-]*)\s+\[/i);
+      if (noName) return { ariaRole: noName[1].toLowerCase(), ariaName: null };
+    }
+    return { ariaRole: null, ariaName: null };
+  }
+
+  private async _beginCollectorStep(
+    toolName: string,
+    toolArgs: Record<string, unknown>,
+  ): Promise<void> {
+    if (!this.collector) return;
+
+    const stepId = this.collector.nextStepId();
+    this.activeStepId = stepId;
+
+    const action = buildActionData(toolName, toolArgs);
+
+    // Enrich action.element with structured ariaRole/ariaName parsed from the ARIA snapshot.
+    // buildActionData only captures the human-readable description; we need the real ARIA role
+    // and name so that IdentityResolutionAgent can do STRONG matching.
+    const ref = typeof toolArgs.ref === 'string' ? toolArgs.ref : null;
+    if (ref && this.lastAriaContent && action.element) {
+      const parsed = this._parseElementFromSnapshot(this.lastAriaContent, ref);
+      if (parsed.ariaRole) action.element.ariaRole = parsed.ariaRole;
+      if (parsed.ariaName) action.element.ariaName = parsed.ariaName;
+    }
+
+    // Save "before" ARIA snapshot (last cached browser_snapshot result)
+    let ariaFile = '';
+    let domFile = '';
+    if (this.lastAriaContent) {
+      ariaFile = await this.collector.saveAriaSnapshot(stepId, this.lastAriaContent);
+      domFile = await this.collector.saveDomSnapshot(stepId, this.lastAriaContent);
+    }
+
+    const storageFile = await this.collector.saveStorage(stepId, {
+      localStorage: {},
+      sessionStorage: {},
+      cookies: [],
+    });
+
+    await this.collector.beginStep(stepId, this.lastPageUrl ?? '', action, {
+      ariaSnapshotFile: ariaFile,
+      domFile,
+      storageFile,
+      networkFile: `raw/network/${stepId}-network.json`,
+      screenshotFile: `raw/screenshots/${stepId}-before.webp`,
+    });
+  }
+
+  private async _endCollectorStep(isError: boolean): Promise<void> {
+    if (!this.collector || !this.activeStepId) return;
+    const stepId = this.activeStepId;
+    this.activeStepId = null;
+
+    if (isError) {
+      // Mark step incomplete — don't save "after"
+      return;
+    }
+
+    // Collect network events for this step
+    let networkFile = '';
+    try {
+      const netResult = await this.mcp.callTool('browser_network_requests', {});
+      const netContent = this._extractTextContent(netResult);
+      networkFile = await this.collector.saveNetwork(stepId, { raw: netContent });
+    } catch {
+      // network collection is best-effort
+    }
+
+    // Get "after" ARIA snapshot
+    let afterAriaFile = '';
+    try {
+      const snapResult = await this.mcp.snapshot();
+      const snapContent = snapResult ? this._extractTextContent(snapResult) : '';
+      if (snapContent) {
+        this.lastAriaContent = snapContent;
+        afterAriaFile = await this.collector.saveAriaSnapshot(`${stepId}-after`, snapContent);
+      }
+    } catch {
+      // best-effort
+    }
+
+    await this.collector.completeStep(stepId, {
+      ariaSnapshotFile: afterAriaFile,
+      networkFile,
+    });
   }
 
   private _extractPageUrl(snapshotText: string): string | null {
@@ -406,6 +662,7 @@ export class Agent {
     // Update baseline — this snapshot is now what the last screenshot represents
     this.lastCapturedSnapshot = snapshotText;
 
+    this.lastScreenshotPath = saved.path;
     console.log(`    Screenshot saved: ${saved.path}`);
     return { urlChanged, screenshotPath: saved.path };
   }

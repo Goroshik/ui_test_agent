@@ -6,12 +6,13 @@ import { readdir, rm } from 'fs/promises';
 import { existsSync } from 'fs';
 import OpenAI from 'openai';
 import { resolveModel } from './utils.js';
+import { LmModelManager } from './lm-model-manager.js';
 import { Agent } from './agents/main/agent.js';
+import { PipelineRunner } from './agents/pipeline/pipeline-runner.js';
 import { PlannerAgent } from './agents/planner/planner-agent.js';
 import { MemoryAnalysisAgent } from './agents/planner/memory-analysis-agent.js';
-import { PageMemoryAgent } from './agents/post-run/page-memory-agent.js';
-import { DomMemoryAgent } from './agents/post-run/dom-memory-agent.js';
 import { PostRunCompareAgent } from './agents/post-run/post-run-snapshot-compare-agent.js';
+import { TaskVerificationAgent } from './agents/post-run/task-verification-agent.js';
 import { RunLogger, attachLogger } from './run-logger.js';
 import { connectDB, closeDB, saveRun, updateRun } from './db.js';
 
@@ -41,6 +42,29 @@ if (!userTask) {
   process.exit(1);
 }
 
+// ─── Terminal key listener ────────────────────────────────────────────────────
+// Press 's' to gracefully stop the agent after its current step.
+// Ctrl+C always exits immediately.
+let currentAgent: import('./agents/main/agent.js').Agent | null = null;
+let ttyListenerActive = false;
+
+function onKeyPress(key: string): void {
+  if (key === 's' || key === 'S') {
+    currentAgent?.requestStop();
+  } else if (key === '\u0003') { // Ctrl+C
+    process.exit(1);
+  }
+}
+
+if (process.stdin.isTTY) {
+  process.stdin.setRawMode(true);
+  process.stdin.resume();
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', onKeyPress);
+  ttyListenerActive = true;
+  console.log('Tip: press "s" to stop the agent after the current step.\n');
+}
+
 const client = new OpenAI({
   baseURL: process.env.LM_STUDIO_BASE_URL || 'http://localhost:1234/v1',
   apiKey: process.env.LM_STUDIO_API_KEY || 'lm-studio',
@@ -60,42 +84,96 @@ await logger.init(userTask);
 attachLogger(client as Parameters<typeof attachLogger>[0], logger, 'LLM');
 
 try {
-  const model = await resolveModel(client);
+  const mm = new LmModelManager();
+
+  // Model roles — each phase uses a dedicated model; if not configured, falls back to resolveModel
+  const plannerModel = process.env.LM_STUDIO_PLANNER_MODEL;
+  const mainModel = process.env.LM_STUDIO_MAIN_MODEL || process.env.LM_STUDIO_MODEL;
+  const validatorModel = process.env.LM_STUDIO_VALIDATOR_MODEL;
 
   const plannerEnabled = process.env.PLANNER_ENABLED !== 'false';
+  const maxRetries = parseInt(process.env.MAX_RETRIES || '2', 10);
+  const verificationEnabled = process.env.VERIFICATION_ENABLED !== 'false';
 
   // 1. Analyze existing page memory → build navigation context for the planner
   // 2. Planner builds step-by-step execution path using site knowledge
   let plan: string;
   if (plannerEnabled) {
-    const memoryAnalysis = await new MemoryAnalysisAgent(client).analyze(userTask);
-    plan = await new PlannerAgent(client).plan(userTask, memoryAnalysis);
+    plan = await mm.withModel(plannerModel, async () => {
+      const memoryAnalysis = await new MemoryAnalysisAgent(client, plannerModel).analyze(userTask);
+      return new PlannerAgent(client, plannerModel).plan(userTask, memoryAnalysis);
+    });
   } else {
     plan = userTask;
   }
 
-  // 3. Main agent executes the plan
-  const agent = new Agent(client, logger, mongoRunId ?? undefined);
-  await agent.run(plan);
+  let taskSucceeded = false;
+  let lastFailReason = '';
+  let lastAgent: Agent | null = null;
 
-  const pageMemoryEnabled = process.env.PAGE_MEMORY_ENABLED !== 'false';
-  const domMemoryEnabled = process.env.DOM_MEMORY_ENABLED !== 'false';
+  for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
+    if (attempt > 1) {
+      console.log(`\n${'─'.repeat(50)}`);
+      console.log(`[Retry ${attempt - 1}/${maxRetries}] Previous attempt failed: ${lastFailReason}`);
+      console.log(`[Retry] Restarting agent...`);
+      console.log('─'.repeat(50));
+      await cleanIncomingDirs();
+    }
+
+    // 3. Main agent executes the plan
+    const agent = new Agent(client, logger, mongoRunId ?? undefined, mainModel);
+    lastAgent = agent;
+    currentAgent = agent;
+    await mm.withModel(mainModel, () => agent.run(plan));
+    currentAgent = null;
+
+    // 4. Verify task completion BEFORE running heavy analysis pipeline
+    if (verificationEnabled) {
+      const effectiveValidatorModel = validatorModel ?? await resolveModel(client);
+      const verification = await mm.withModel(validatorModel, () => {
+        const verifier = new TaskVerificationAgent(client, effectiveValidatorModel);
+        return verifier.verify(plan, agent.getLastScreenshotPath());
+      });
+
+      if (!verification.success) {
+        lastFailReason = verification.reason;
+        console.log(`\n❌ Task not completed: ${verification.reason}`);
+        if (attempt <= maxRetries) {
+          continue; // skip pipeline, go straight to retry
+        }
+      } else {
+        taskSucceeded = true;
+        console.log('\n✅ Task verified as completed.');
+      }
+    } else {
+      taskSucceeded = true;
+    }
+
+    // 4b. Run analysis pipeline on collected session data (only if task passed or verification disabled)
+    const pipelineEnabled = process.env.PIPELINE_ENABLED !== 'false';
+    if (pipelineEnabled) {
+      const sessionDir = agent.getSessionDirectory();
+      if (sessionDir) {
+        const dataDir = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'data');
+        const pipelineModel = mainModel ?? await resolveModel(client);
+        await mm.withModel(mainModel, () =>
+          new PipelineRunner(client, pipelineModel).run(sessionDir, dataDir)
+        );
+      }
+    }
+
+    break; // exit retry loop — pipeline already ran
+  }
+
+  if (!taskSucceeded) {
+    console.log(`\n⚠️  Task failed after ${maxRetries} retries. Last reason: ${lastFailReason}`);
+  }
+
   const screenshotAnalysisEnabled = process.env.SCREENSHOT_ANALYSIS_ENABLED !== 'false';
   const snapshotAnalysisEnabled = process.env.SNAPSHOT_ANALYSIS_ENABLED !== 'false';
 
-  // 4. Analyze screenshots taken this run → write page descriptions to memory
-  //    Must run before PostRunCompareAgent moves files out of incoming/
-  if (pageMemoryEnabled) {
-    await new PageMemoryAgent(client, model).process();
-  }
-
-  // 4b. Analyze accessibility snapshots → write DOM structure to dom-memory.json
-  if (domMemoryEnabled) {
-    await new DomMemoryAgent(client, model).process();
-  }
-
   // 5. Visual + snapshot diff against baselines
-  const compareAgent = new PostRunCompareAgent(client, model);
+  const compareAgent = new PostRunCompareAgent(client, mainModel ?? await resolveModel(client));
   if (screenshotAnalysisEnabled) {
     await compareAgent.processScreenshots();
   }
@@ -116,5 +194,10 @@ try {
   console.error('\nFatal error:', errMsg);
   process.exitCode = 1;
 } finally {
+  if (ttyListenerActive) {
+    process.stdin.removeListener('data', onKeyPress);
+    process.stdin.setRawMode(false);
+    process.stdin.pause();
+  }
   await closeDB();
 }
