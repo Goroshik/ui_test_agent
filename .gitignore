@@ -8,3 +8,5 @@ visual-bot/screenshots/*.jpeg
 /.idea/
 /logs/
 /data/
+/.playwright-mcp/
+/.claude/
