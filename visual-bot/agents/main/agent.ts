@@ -61,6 +61,8 @@ const SYSTEM_PROMPT = `You are a browser automation agent. Complete the user's t
 
 IMPORTANT: Always respond in Russian. All your messages, summaries, and explanations must be in Russian.
 
+Перед каждым вызовом инструмента пиши 1–2 коротких предложения: что ты сейчас видишь на странице и что собираешься сделать. Это нужно для анализа логов — будь краток и конкретен.
+
 ## How to interact with page elements
 
 Elements are identified via accessibility snapshots. The workflow is always:
@@ -178,8 +180,8 @@ export class Agent {
 
   constructor(client?: OpenAI, logger?: RunLogger, mongoRunId?: ObjectId, modelOverride?: string) {
     this.client = client ?? new OpenAI({
-      baseURL: process.env.LM_STUDIO_BASE_URL || 'http://localhost:1234/v1',
-      apiKey: process.env.LM_STUDIO_API_KEY || 'lm-studio',
+      baseURL: process.env.OLLAMA_BASE_URL || 'http://localhost:11434/v1',
+      apiKey: process.env.OLLAMA_API_KEY || 'ollama',
     });
     this.logger = logger;
     this.mongoRunId = mongoRunId;
@@ -507,13 +509,37 @@ export class Agent {
       if (parsed.ariaName) action.element.ariaName = parsed.ariaName;
     }
 
-    // Save "before" ARIA snapshot (last cached browser_snapshot result)
-    let ariaFile = '';
-    let domFile = '';
-    if (this.lastAriaContent) {
-      ariaFile = await this.collector.saveAriaSnapshot(stepId, this.lastAriaContent);
-      domFile = await this.collector.saveDomSnapshot(stepId, this.lastAriaContent);
+    // Enrich action.element with real DOM attrs via browser_evaluate(ref).
+    // This is the source of truth for selectors — no more guessing.
+    if (ref && action.element) {
+      try {
+        const attrs = await this.mcp.evaluateAttrsOnRef(ref);
+        if (attrs) {
+          action.element.attrs = attrs;
+          if (attrs.testid) action.element.testid = attrs.testid;
+          if (!action.element.tagName) action.element.tagName = attrs.tag;
+          if (!action.element.text && attrs.text) action.element.text = attrs.text;
+        }
+      } catch {
+        // best-effort
+      }
     }
+
+    // Save structured DOM dump as the sole pre-action artifact.
+    // Legacy aria YAML / dom HTML files are no longer written — the JSON
+    // dump from browser_evaluate carries all the info downstream analyzers need.
+    let domFile = '';
+    try {
+      const dump = await this.mcp.dumpInteractiveDom();
+      if (dump && Array.isArray(dump)) {
+        domFile = await this.collector.saveDomDump(stepId, dump);
+      } else {
+        console.warn(`[Agent] dumpInteractiveDom returned null at ${stepId}`);
+      }
+    } catch (err) {
+      console.warn(`[Agent] dumpInteractiveDom failed at ${stepId}: ${(err as Error).message}`);
+    }
+    const ariaFile = '';
 
     const storageFile = await this.collector.saveStorage(stepId, {
       localStorage: {},
@@ -550,21 +576,17 @@ export class Agent {
       // network collection is best-effort
     }
 
-    // Get "after" ARIA snapshot
-    let afterAriaFile = '';
+    // Refresh in-memory ARIA snapshot for the LLM's next turn (not persisted).
     try {
       const snapResult = await this.mcp.snapshot();
       const snapContent = snapResult ? this._extractTextContent(snapResult) : '';
-      if (snapContent) {
-        this.lastAriaContent = snapContent;
-        afterAriaFile = await this.collector.saveAriaSnapshot(`${stepId}-after`, snapContent);
-      }
+      if (snapContent) this.lastAriaContent = snapContent;
     } catch {
       // best-effort
     }
 
     await this.collector.completeStep(stepId, {
-      ariaSnapshotFile: afterAriaFile,
+      ariaSnapshotFile: '',
       networkFile,
     });
   }

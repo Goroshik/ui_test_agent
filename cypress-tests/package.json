@@ -1,0 +1,22 @@
+{
+  "name": "cypress-tests",
+  "version": "1.0.0",
+  "description": "Standalone Cypress test project",
+  "main": "cypress.config.js",
+  "scripts": {
+    "test": "cypress run",
+    "test:smoke": "cypress run --spec cypress/e2e/smoke.cy.js",
+    "test:ui": "cypress run --headed --browser chrome",
+    "open": "cypress open"
+  },
+  "keywords": [
+    "cypress",
+    "e2e",
+    "tests"
+  ],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "cypress": "^15.13.1"
+  }
+}

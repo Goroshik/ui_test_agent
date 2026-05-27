@@ -7,20 +7,13 @@
   "scripts": {
     "start": "tsx visual-bot/index.ts",
     "pipeline": "tsx visual-bot/run-pipeline.ts",
-    "analyze-memory": "tsx visual-bot/analyze-memory.ts",
-    "analyze-memory:force": "tsx visual-bot/analyze-memory.ts --force",
-    "analyze-dom-memory": "tsx visual-bot/analyze-dom-memory.ts",
-    "analyze-dom-memory:force": "tsx visual-bot/analyze-dom-memory.ts --force",
-    "start:compare": "tsx visual-bot/snapshot-compare.ts",
-    "start:compare:screenshots": "tsx visual-bot/snapshot-compare.ts",
-    "start:compare:snapshots": "tsx visual-bot/snapshot-text-compare.ts",
-    "build": "tsc",
-    "start:compare:dist": "node dist/visual-bot/snapshot-compare.js",
-    "start:compare:snapshots:dist": "node dist/visual-bot/snapshot-text-compare.js",
-    "start:dist": "node dist/visual-bot/index.js"
+    "test": "tsx visual-bot/generators/test-planner.ts && tsx visual-bot/generators/selectors-generator.ts && tsx visual-bot/generators/fixtures-generator.ts && tsx visual-bot/generators/test-generator.ts && tsx visual-bot/validators/test-validator.ts",
+    "test:validate": "tsx visual-bot/validators/test-validator.ts",
+    "test:ui": "yarn --cwd cypress-tests test:ui",
+    "build": "tsc"
   },
   "dependencies": {
-    "@playwright/mcp": "^0.0.29",
+    "@playwright/mcp": "^0.0.75",
     "dotenv": "^16.4.5",
     "mongodb": "^7.1.1",
     "openai": "^4.77.0",

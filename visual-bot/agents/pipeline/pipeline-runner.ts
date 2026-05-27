@@ -5,6 +5,7 @@ import { AriaAnalyzerAgent } from './aria-analyzer-agent.js';
 import { DomAnalyzerAgent } from './dom-analyzer-agent.js';
 import { NetworkAnalyzerAgent } from './network-analyzer-agent.js';
 import { IdentityResolutionAgent } from './identity-resolution-agent.js';
+import { NeedsTestIdReportAgent } from './needs-testid-report-agent.js';
 import type { SessionMeta } from '../../pipeline/types.js';
 
 /**
@@ -19,12 +20,14 @@ export class PipelineRunner {
   private readonly domAgent: DomAnalyzerAgent;
   private readonly networkAgent: NetworkAnalyzerAgent;
   private readonly identityAgent: IdentityResolutionAgent;
+  private readonly reportAgent: NeedsTestIdReportAgent;
 
   constructor(client: OpenAI, model: string) {
     this.ariaAgent = new AriaAnalyzerAgent(client, model);
     this.domAgent = new DomAnalyzerAgent(client, model);
     this.networkAgent = new NetworkAnalyzerAgent(client, model);
     this.identityAgent = new IdentityResolutionAgent(client, model);
+    this.reportAgent = new NeedsTestIdReportAgent(client, model);
   }
 
   async run(sessionDir: string, dataDir: string): Promise<void> {
@@ -46,6 +49,9 @@ export class PipelineRunner {
 
     // Step 5: identity resolution (needs all analyzed files)
     await this.identityAgent.run(sessionDir, dataDir);
+
+    // Step 6: classify registry → write needs-testid report
+    await this.reportAgent.run(dataDir);
 
     console.log('[Pipeline] Analysis complete.\n');
   }
