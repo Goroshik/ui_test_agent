@@ -1,0 +1,82 @@
+{
+  "version": "1.0",
+  "generatedAt": "2026-05-26T18:08:47.281Z",
+  "sessions": [
+    "2026-05-26_18-06-54"
+  ],
+  "scenarios": [
+    {
+      "id": "login-authentication-flow",
+      "page": "/v1/login",
+      "name": "User Login Authentication Flow",
+      "file": "cypress/e2e/v1-login/authentication-flow.cy.js",
+      "priority": "high",
+      "sessionId": "2026-05-26_18-06-54",
+      "stepIds": [
+        "step-002",
+        "step-003",
+        "step-004"
+      ],
+      "componentIds": [
+        "v1-login__login-email-input",
+        "v1-login__login-password-input",
+        "v1-login__login-submit-btn"
+      ],
+      "edgeCases": [
+        {
+          "type": "network-error",
+          "component": "v1-login__login-submit-btn",
+          "action": "click",
+          "description": "Login API returns 500 error"
+        },
+        {
+          "type": "network-error",
+          "component": "v1-login__login-submit-btn",
+          "action": "click",
+          "description": "Login API returns 401 unauthorized"
+        },
+        {
+          "type": "network-error",
+          "component": "v1-login__login-submit-btn",
+          "action": "click",
+          "description": "Login API returns 400 invalid credentials"
+        },
+        {
+          "type": "loading-state",
+          "component": "v1-login__login-submit-btn",
+          "action": "click",
+          "description": "Submit button shows loading state during API call"
+        },
+        {
+          "type": "empty-state",
+          "component": "v1-login__login-email-input",
+          "action": "fill",
+          "description": "Email field submitted empty"
+        },
+        {
+          "type": "empty-state",
+          "component": "v1-login__login-password-input",
+          "action": "fill",
+          "description": "Password field submitted empty"
+        }
+      ],
+      "fixtureFiles": [
+        "v1-login__login-submit-btn--success.json",
+        "v1-login__login-submit-btn--error.json"
+      ],
+      "description": "User enters email and password credentials and submits login form",
+      "notes": "This is a critical authentication flow. Network effects detected on all form interactions. Successful login should redirect to home page."
+    }
+  ],
+  "summary": {
+    "total": 1,
+    "byPriority": {
+      "high": 1,
+      "medium": 0,
+      "low": 0
+    },
+    "byPage": {
+      "/v1/login": 1
+    }
+  }
+}

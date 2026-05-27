@@ -11,6 +11,7 @@ import type {
   ComponentRegistry,
   ComponentSelectors,
   ComponentAction,
+  ValidationConstraints,
 } from '../../pipeline/types.js';
 
 interface AnchorEntry {
@@ -24,6 +25,7 @@ interface AnchorEntry {
   ref?: string | null;
   actionType: string;
   value?: string;
+  constraints?: ValidationConstraints | null;
 }
 
 interface MatchResult {
@@ -146,14 +148,15 @@ export class IdentityResolutionAgent {
       .map((s) => ({
         stepId: s.stepId,
         url: s.url,
-        testid: s.action.element?.testid,
+        testid: s.action.element?.testid ?? s.action.element?.attrs?.testid ?? null,
         ariaRole: s.action.element?.ariaRole,
         ariaName: s.action.element?.ariaName,
-        tagName: s.action.element?.tagName,
-        text: s.action.element?.text,
+        tagName: s.action.element?.tagName ?? s.action.element?.attrs?.tag,
+        text: s.action.element?.text ?? s.action.element?.attrs?.text,
         ref: s.action.element?.ref,
         actionType: s.action.type,
         value: s.action.value,
+        constraints: s.action.element?.attrs?.constraints ?? null,
       }));
   }
 
@@ -381,6 +384,7 @@ Return JSON (only, no explanation):
 
     const selectors = this._buildSelectors(anchor, match);
     const actions = this._buildActions(anchor, match);
+    const constraints = anchor.constraints ?? match.dom?.constraints ?? null;
 
     return {
       id,
@@ -395,6 +399,7 @@ Return JSON (only, no explanation):
         pre_interaction: ['be.visible', 'be.enabled'],
         post_interaction: [],
       },
+      constraints,
       confidence: match.confidence,
       seenCount: 1,
       manualOverride: false,
@@ -406,23 +411,29 @@ Return JSON (only, no explanation):
     const testid = anchor.testid ?? match.dom?.testid ?? null;
     const ariaRole = anchor.ariaRole ?? match.aria?.ariaRole ?? null;
     const ariaName = anchor.ariaName ?? match.aria?.ariaName ?? null;
-    const css = match.dom?.cssSelector ?? null;
+    const domCss = match.dom?.cssSelector ?? null;
+    const domKind = match.dom?.selectorKind ?? null;
 
     const aria = ariaRole && ariaName ? `${ariaRole}[name="${ariaName}"]` : '';
     const testidSel = testid ? `[data-testid="${testid}"]` : null;
 
+    // Priority: testid > stable CSS from live evaluate > aria-style locator > fallback
     let preferred: string;
     if (testidSel) {
       preferred = testidSel;
+    } else if (domCss && (domKind === 'testid' || domKind === 'id' || domKind === 'aria')) {
+      preferred = domCss;
+    } else if (domCss && domKind === 'css') {
+      preferred = domCss;
     } else if (aria) {
       preferred = aria;
-    } else if (css) {
-      preferred = css;
+    } else if (domCss) {
+      preferred = domCss;
     } else {
       preferred = `[data-ref="${anchor.ref ?? ''}"]`;
     }
 
-    return { preferred, aria, testid: testidSel, css, xpath: null };
+    return { preferred, aria, testid: testidSel, css: domCss, xpath: null };
   }
 
   private _buildActions(anchor: AnchorEntry, match: MatchResult): ComponentAction[] {
@@ -504,6 +515,7 @@ Return JSON (only, no explanation):
       },
       actions: this._mergeActions(existing.actions, newRec.actions),
       states: { ...existing.states, ...newRec.states },
+      constraints: newRec.constraints ?? existing.constraints ?? null,
       assertions: {
         pre_interaction: [
           ...new Set([...existing.assertions.pre_interaction, ...newRec.assertions.pre_interaction]),

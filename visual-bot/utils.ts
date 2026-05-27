@@ -3,16 +3,37 @@ import sharp from 'sharp';
 
 export async function resolveModel(client: OpenAI, override?: string): Promise<string> {
   if (override) return override;
-  const model = process.env.LM_STUDIO_MAIN_MODEL || process.env.LM_STUDIO_MODEL;
+  const model = process.env.OLLAMA_MAIN_MODEL || process.env.OLLAMA_MODEL;
   if (model) return model;
+
+  // Try Ollama's /api/ps — return whatever's currently loaded (no pin).
+  const loaded = await fetchOllamaLoadedModel(client);
+  if (loaded) return loaded;
+
+  // Fallback: any installed model (Ollama exposes them via OpenAI-compat /v1/models).
   const list = await client.models.list();
   const chat = list.data.find((m) => !m.id.includes('embedding'));
-  if (!chat) throw new Error('No loaded models found in LM Studio');
+  if (!chat) throw new Error('No models available in Ollama (none loaded, none installed)');
   return chat.id;
 }
 
+async function fetchOllamaLoadedModel(client: OpenAI): Promise<string | null> {
+  const baseUrl = String((client as unknown as { baseURL?: string }).baseURL ?? '');
+  if (!baseUrl) return null;
+  const root = baseUrl.replace(/\/v1\/?$/, '');
+  try {
+    const resp = await fetch(`${root}/api/ps`);
+    if (!resp.ok) return null;
+    const data = (await resp.json()) as { models?: Array<{ name?: string; model?: string }> };
+    const first = data.models?.[0];
+    return first?.name || first?.model || null;
+  } catch {
+    return null;
+  }
+}
+
 export function resolveAuxModel(): string | undefined {
-  return process.env.LM_STUDIO_AUX_MODEL;
+  return process.env.OLLAMA_AUX_MODEL;
 }
 
 const VISION_SIZE = parseInt(process.env.VISION_MAX_WIDTH || '512', 10);

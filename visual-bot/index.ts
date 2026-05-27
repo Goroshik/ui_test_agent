@@ -4,9 +4,9 @@ import { fileURLToPath } from 'url';
 config({ path: resolve(dirname(fileURLToPath(import.meta.url)), '..', '.env') });
 import { readdir, rm } from 'fs/promises';
 import { existsSync } from 'fs';
-import OpenAI from 'openai';
 import { resolveModel } from './utils.js';
-import { LmModelManager } from './lm-model-manager.js';
+import { createProvider } from './llm-provider.js';
+import { OllamaModelManager } from './ollama-model-manager.js';
 import { Agent } from './agents/main/agent.js';
 import { PipelineRunner } from './agents/pipeline/pipeline-runner.js';
 import { PlannerAgent } from './agents/planner/planner-agent.js';
@@ -65,10 +65,10 @@ if (process.stdin.isTTY) {
   console.log('Tip: press "s" to stop the agent after the current step.\n');
 }
 
-const client = new OpenAI({
-  baseURL: process.env.LM_STUDIO_BASE_URL || 'http://localhost:1234/v1',
-  apiKey: process.env.LM_STUDIO_API_KEY || 'lm-studio',
-});
+// Main + planner stay on LM Studio (local browser execution).
+const { client } = createProvider('main');
+// Analyzer pipeline (snapshot compare, pipeline runner, post-run) can run on a cloud provider.
+const analyzer = createProvider('analyzer');
 
 await connectDB();
 const mongoRunId = await saveRun({ task: userTask });
@@ -82,14 +82,17 @@ const runId = new Date()
 const logger = new RunLogger(runId, mongoRunId ?? undefined);
 await logger.init(userTask);
 attachLogger(client as Parameters<typeof attachLogger>[0], logger, 'LLM');
+if (analyzer.client !== client) {
+  attachLogger(analyzer.client as Parameters<typeof attachLogger>[0], logger, 'LLM-analyzer');
+}
 
 try {
-  const mm = new LmModelManager();
+  const mm = new OllamaModelManager();
 
   // Model roles — each phase uses a dedicated model; if not configured, falls back to resolveModel
-  const plannerModel = process.env.LM_STUDIO_PLANNER_MODEL;
-  const mainModel = process.env.LM_STUDIO_MAIN_MODEL || process.env.LM_STUDIO_MODEL;
-  const validatorModel = process.env.LM_STUDIO_VALIDATOR_MODEL;
+  const plannerModel = process.env.OLLAMA_PLANNER_MODEL;
+  const mainModel = process.env.OLLAMA_MAIN_MODEL || process.env.OLLAMA_MODEL;
+  const validatorModel = process.env.OLLAMA_VALIDATOR_MODEL;
 
   const plannerEnabled = process.env.PLANNER_ENABLED !== 'false';
   const maxRetries = parseInt(process.env.MAX_RETRIES || '2', 10);
@@ -155,10 +158,16 @@ try {
       const sessionDir = agent.getSessionDirectory();
       if (sessionDir) {
         const dataDir = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'data');
-        const pipelineModel = mainModel ?? await resolveModel(client);
-        await mm.withModel(mainModel, () =>
-          new PipelineRunner(client, pipelineModel).run(sessionDir, dataDir)
-        );
+        const pipelineModel =
+          analyzer.model || (analyzer.kind === 'ollama' ? await resolveModel(analyzer.client) : '');
+        if (!pipelineModel) throw new Error('No analyzer model configured for pipeline');
+        const runPipeline = () =>
+          new PipelineRunner(analyzer.client, pipelineModel).run(sessionDir, dataDir);
+        if (analyzer.kind === 'ollama') {
+          await mm.withModel(analyzer.model || mainModel, runPipeline);
+        } else {
+          await runPipeline();
+        }
       }
     }
 
@@ -173,7 +182,10 @@ try {
   const snapshotAnalysisEnabled = process.env.SNAPSHOT_ANALYSIS_ENABLED !== 'false';
 
   // 5. Visual + snapshot diff against baselines
-  const compareAgent = new PostRunCompareAgent(client, mainModel ?? await resolveModel(client));
+  const compareModel =
+    analyzer.model || (analyzer.kind === 'ollama' ? await resolveModel(analyzer.client) : '');
+  if (!compareModel) throw new Error('No analyzer model configured for post-run compare');
+  const compareAgent = new PostRunCompareAgent(analyzer.client, compareModel);
   if (screenshotAnalysisEnabled) {
     await compareAgent.processScreenshots();
   }

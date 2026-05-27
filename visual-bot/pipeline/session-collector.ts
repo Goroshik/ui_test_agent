@@ -67,6 +67,13 @@ export class SessionCollector {
     return `raw/dom/${file}`;
   }
 
+  /** Saves a structured interactive-DOM dump (live JS evaluation). */
+  async saveDomDump(stepId: string, data: unknown): Promise<string> {
+    const file = `${stepId}-dom.json`;
+    await writeFile(join(this.rawDir, 'dom', file), JSON.stringify(data, null, 2), 'utf-8');
+    return `raw/dom/${file}`;
+  }
+
   async saveNetwork(stepId: string, data: unknown): Promise<string> {
     const file = `${stepId}-network.json`;
     await writeFile(join(this.rawDir, 'network', file), JSON.stringify(data, null, 2), 'utf-8');

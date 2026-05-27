@@ -30,6 +30,50 @@ export interface ActionElement {
   xpath?: string | null;
   cssPath?: string | null;
   ref?: string | null;
+  /** Structured attributes captured live via browser_evaluate at action time. */
+  attrs?: DomElementAttrs | null;
+}
+
+/** Stable attributes extracted from a real DOM element via JS evaluate. */
+export interface DomElementAttrs {
+  tag: string;
+  testid: string | null;
+  id: string | null;
+  name: string | null;
+  type: string | null;
+  role: string | null;
+  ariaLabel: string | null;
+  classes: string | null;
+  text: string | null;
+  href?: string | null;
+  bbox?: { x: number; y: number; w: number; h: number } | null;
+  constraints?: ValidationConstraints | null;
+}
+
+/**
+ * Validation constraints read straight from the DOM element. These are GROUND
+ * TRUTH for what the app considers valid input — used to derive grounded
+ * negative test cases instead of LLM guesses.
+ */
+export interface ValidationConstraints {
+  required: boolean;
+  disabled: boolean;
+  readonly: boolean;
+  /** HTML input type: email, number, tel, url, password, text, … */
+  inputType: string | null;
+  minLength: number | null;
+  maxLength: number | null;
+  min: string | null;
+  max: string | null;
+  step: string | null;
+  pattern: string | null;
+}
+
+/** Full-page dump of interactive DOM elements (one per page snapshot). */
+export interface DomElementDump extends DomElementAttrs {
+  /** Stable CSS selector chosen deterministically: testid > id > role+name > tag.class */
+  preferredSelector: string;
+  selectorKind: 'testid' | 'id' | 'aria' | 'css' | 'text' | 'none';
 }
 
 export interface ActionData {
@@ -98,6 +142,34 @@ export interface DomComponent {
   ariaLabel?: string | null;
   pageUrl: string;
   stepId: string;
+  /** From DomElementDump: which kind of selector was picked. */
+  selectorKind?: 'testid' | 'id' | 'aria' | 'css' | 'text' | 'none';
+  constraints?: ValidationConstraints | null;
+}
+
+// ─── Component classification (post-analysis) ─────────────────────────────────
+
+export type SelectorQuality = 'stable' | 'text-based' | 'structural' | 'none';
+export type ComponentClassification = 'ready' | 'needs-attention' | 'low-priority';
+
+export interface ClassifiedComponent {
+  componentId: string;
+  page: string;
+  ariaRole: string | null;
+  ariaName: string | null;
+  label: string;
+  interactedByUser: boolean;
+  userAction: string | null;
+  currentBestSelector: string;
+  selectorQuality: SelectorQuality;
+  classification: ComponentClassification;
+  /** True when this component blocks test generation (interacted but no stable hook). */
+  blocking: boolean;
+  /** LLM suggestion for fixing the gap, e.g. adding a data-testid. */
+  suggestion: {
+    suggestedTestId: string;
+    reason: string;
+  } | null;
 }
 
 export interface NetworkTrigger {
@@ -157,6 +229,8 @@ export interface ComponentRecord {
     pre_interaction: string[];
     post_interaction: string[];
   };
+  /** Validation constraints read from the live DOM (for grounded edge cases). */
+  constraints?: ValidationConstraints | null;
   confidence: 'high' | 'medium' | 'low';
   seenCount: number;
   manualOverride: boolean;

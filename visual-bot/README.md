@@ -134,3 +134,43 @@ The agent uses the [Model Context Protocol](https://modelcontextprotocol.io/) to
 communicate with the Playwright browser server. All available browser tools
 (navigate, click, type, select, evaluate, etc.) are discovered dynamically and
 forwarded to the LLM as OpenAI-compatible function definitions.
+
+## Полный пайплайн (index.ts)
+
+```
+MemoryAnalysisAgent   — анализирует реестр, находит релевантные страницы
+       ↓
+PlannerAgent          — генерирует пошаговый план из задачи + контекста
+       ↓
+Agent (main)          — выполняет шаги в браузере, собирает артефакты
+       ↓
+PostRunCompareAgent   — сравнивает скриншоты и ARIA-снапшоты с baseline
+       ↓
+TaskVerificationAgent — проверяет выполнение задачи по финальному скриншоту
+       ↓
+PipelineRunner        — анализирует артефакты → строит реестр компонентов
+```
+
+Для перезапуска только пайплайна без повторного выполнения задачи:
+
+```bash
+npx tsx visual-bot/run-pipeline.ts [sessionId]
+```
+
+## Структура файлов
+
+```
+visual-bot/
+├── index.ts                  — точка входа, оркестратор
+├── run-pipeline.ts           — standalone запуск анализа для сохранённой сессии
+├── lm-model-manager.ts       — управление моделью в LM Studio (load/unload)
+├── visual-diff.ts            — сравнение скриншотов через LLM
+├── visual-text-diff.ts       — сравнение ARIA-снапшотов через LLM
+├── attention-memory.ts       — накопление правил сравнения для снижения ложных срабатываний
+├── registry-context.ts       — кэш и провайдер реестра компонентов для агентов
+├── memory.ts                 — трекер посещённых URL
+├── run-logger.ts             — логирование в файл и MongoDB
+├── utils.ts                  — resolveModel, resizeForVision, parseDiffJson
+├── agents/                   — все агенты (см. agents/README.md)
+└── pipeline/                 — типы и файловые хранилища (см. pipeline/README.md)
+```

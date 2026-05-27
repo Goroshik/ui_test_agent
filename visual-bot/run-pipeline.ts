@@ -3,8 +3,9 @@ import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 config({ path: resolve(dirname(fileURLToPath(import.meta.url)), '..', '.env') });
 import { readdirSync } from 'fs';
-import OpenAI from 'openai';
 import { PipelineRunner } from './agents/pipeline/pipeline-runner.js';
+import { createProvider } from './llm-provider.js';
+import { resolveModel } from './utils.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const dataDir = resolve(__dirname, '..', 'data');
@@ -34,12 +35,10 @@ if (arg) {
 console.log(`Session: ${sessionDir}`);
 console.log(`Data:    ${dataDir}\n`);
 
-const client = new OpenAI({
-  baseURL: process.env.LM_STUDIO_BASE_URL || 'http://localhost:1234/v1',
-  apiKey: process.env.LM_STUDIO_API_KEY || 'lm-studio',
-});
-
-const model = process.env.LM_STUDIO_MAIN_MODEL || process.env.LM_STUDIO_MODEL || 'default';
+const { client, model: configuredModel, kind } = createProvider('analyzer');
+const model = configuredModel || (kind === 'ollama' ? await resolveModel(client) : '');
+if (!model) throw new Error('No analyzer model configured');
+console.log(`[run-pipeline] provider=${kind} model=${model}\n`);
 
 try {
   await new PipelineRunner(client, model).run(sessionDir, dataDir);
