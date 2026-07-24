@@ -10,3 +10,5 @@ visual-bot/screenshots/*.jpeg
 /data/
 /.playwright-mcp/
 /.claude/
+/coverage/
+/reports/
