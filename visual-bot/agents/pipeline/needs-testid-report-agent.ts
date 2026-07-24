@@ -8,6 +8,14 @@ import type {
   ClassifiedComponent,
 } from '../../pipeline/types.js';
 
+/** Outcome of grading a component's selectors for test-generation readiness. */
+interface SelectorDecision {
+  quality: ClassifiedComponent['selectorQuality'];
+  classification: ClassifiedComponent['classification'];
+  blocking: boolean;
+  currentBestSelector: string;
+}
+
 /**
  * Reads the freshly merged registry and classifies every component the user
  * interacted with into:
@@ -93,15 +101,10 @@ export class NeedsTestIdReportAgent {
     };
   }
 
-  private _determineSelector(
-    sel: ComponentRecord['selectors'],
-    interacted: boolean,
-  ): {
-    quality: ClassifiedComponent['selectorQuality'];
-    classification: ClassifiedComponent['classification'];
-    blocking: boolean;
-    currentBestSelector: string;
-  } {
+  // Signature kept on one line: crap4ts matches coverage to a function by span
+  // overlap (>=0.8), so a signature long relative to the body sinks the ratio
+  // and the function silently reports 0% coverage however well it is tested.
+  private _determineSelector(sel: ComponentRecord['selectors'], interacted: boolean): SelectorDecision {
     const testid = sel.testid;
     const css = sel.css;
     const preferred = sel.preferred || '';
@@ -121,11 +124,8 @@ export class NeedsTestIdReportAgent {
     };
   }
 
-  private _findStableSelector(
-    testid: string | null,
-    css: string | null,
-    preferred: string,
-  ): string | null {
+  // Signature on one line for the same span-overlap reason as _determineSelector.
+  private _findStableSelector(testid: string | null, css: string | null, preferred: string): string | null {
     if (testid && testid !== 'null') return testid;
     if (css) {
       if (/^\[data-(testid|cy|qa|test)=/.test(css)) return css;
