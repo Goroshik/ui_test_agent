@@ -14,7 +14,9 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint visual-bot",
     "test:unit": "vitest run",
-    "coverage": "vitest run --coverage"
+    "coverage": "vitest run --coverage",
+    "crap": "crap4ts -c coverage/coverage-final.json",
+    "crap:changed": "crap4ts -c coverage/coverage-final.json --changed-since origin/master"
   },
   "dependencies": {
     "@playwright/mcp": "^0.0.75",
@@ -28,6 +30,7 @@
     "@types/node": "^25.5.0",
     "@types/sharp": "^0.31.1",
     "@vitest/coverage-v8": "^4.1.10",
+    "crap4ts": "^1.0.1",
     "eslint": "^10.7.0",
     "tsx": "^4.21.0",
     "typescript": "^6.0.2",

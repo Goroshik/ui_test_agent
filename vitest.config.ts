@@ -7,6 +7,7 @@ export default defineConfig({
       provider: 'v8',
       reporter: ['text', 'json', 'lcov'],
       reportsDirectory: './coverage',
+      all: true,
       include: ['visual-bot/**/*.ts'],
       exclude: [
         'visual-bot/**/*.test.ts',
