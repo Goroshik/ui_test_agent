@@ -10,9 +10,7 @@ import { RunLogger } from '../../run-logger.js';
 import { checkForLoop } from '../../loop-detector.js';
 import { saveStep } from '../../db.js';
 import { SessionCollector } from '../../pipeline/session-collector.js';
-import type { ActionData, ActionType } from '../../pipeline/types.js';
-
-// ... (schemas and prompt omitted for brevity in thought, but included in actual replacement)
+import type { ActionData, ActionElement, ActionType } from '../../pipeline/types.js';
 
 // Playwright MCP doesn't expose inputSchema via protocol — define them manually
 const TOOL_SCHEMAS: Record<string, OpenAI.FunctionParameters> = {
@@ -122,38 +120,88 @@ const ACTION_TOOLS = new Set([
   'browser_hover',
 ]);
 
+const ACTION_TYPE_MAP: Record<string, ActionType> = {
+  browser_click: 'click',
+  browser_type: 'fill',
+  browser_navigate: 'navigate',
+  browser_select_option: 'select',
+  browser_hover: 'hover',
+  browser_press_key: 'press_key',
+};
+
+function extractStringArg(toolArgs: Record<string, unknown>, key: string): string | undefined {
+  const value = toolArgs[key];
+  return typeof value === 'string' ? value : undefined;
+}
+
+function extractValuesArg(toolArgs: Record<string, unknown>): string | undefined {
+  const values = toolArgs.values;
+  return Array.isArray(values) ? (values as string[]).join(', ') : undefined;
+}
+
+function buildActionElement(
+  elementName: string | undefined,
+  ref: string | undefined,
+): ActionElement | undefined {
+  if (!elementName && !ref) return undefined;
+  return { ariaName: elementName ?? null, ref: ref ?? null };
+}
+
+function buildActionDescription(
+  type: ActionType,
+  elementName: string | undefined,
+  url: string | undefined,
+): string {
+  if (elementName) return `${type} on "${elementName}"`;
+  if (url) return `navigate to ${url}`;
+  return `${type}`;
+}
+
 function buildActionData(toolName: string, toolArgs: Record<string, unknown>): ActionData {
-  const typeMap: Record<string, ActionType> = {
-    browser_click: 'click',
-    browser_type: 'fill',
-    browser_navigate: 'navigate',
-    browser_select_option: 'select',
-    browser_hover: 'hover',
-    browser_press_key: 'press_key',
-  };
+  const type: ActionType = ACTION_TYPE_MAP[toolName] ?? 'other';
+  const elementName = extractStringArg(toolArgs, 'element');
+  const ref = extractStringArg(toolArgs, 'ref');
+  const text = extractStringArg(toolArgs, 'text');
+  const url = extractStringArg(toolArgs, 'url');
+  const values = extractValuesArg(toolArgs);
 
-  const type: ActionType = typeMap[toolName] ?? 'other';
-  const elementName = typeof toolArgs.element === 'string' ? toolArgs.element : undefined;
-  const ref = typeof toolArgs.ref === 'string' ? toolArgs.ref : undefined;
-  const text = typeof toolArgs.text === 'string' ? toolArgs.text : undefined;
-  const url = typeof toolArgs.url === 'string' ? toolArgs.url : undefined;
-  const values = Array.isArray(toolArgs.values) ? (toolArgs.values as string[]).join(', ') : undefined;
-
-  const element = elementName || ref
-    ? { ariaName: elementName ?? null, ref: ref ?? null }
-    : undefined;
+  const element = buildActionElement(elementName, ref);
   const value = text ?? url ?? values;
 
   return {
     type,
-    description: elementName
-      ? `${type} on "${elementName}"`
-      : url
-        ? `navigate to ${url}`
-        : `${type}`,
+    description: buildActionDescription(type, elementName, url),
     ...(element ? { element } : {}),
     ...(value !== undefined ? { value } : {}),
   };
+}
+
+// ─── Types used internally by the run loop ─────────────────────────────────────
+
+interface RunFlags {
+  screenshotsEnabled: boolean;
+  snapshotsEnabled: boolean;
+}
+
+interface ParsedToolCall {
+  id: string;
+  name: string;
+  args: Record<string, unknown>;
+}
+
+interface CaptureContext {
+  toolName: string;
+  toolArgs: Record<string, unknown>;
+  snapshotText: string;
+  isInteraction: boolean;
+  screenshotsEnabled: boolean;
+  snapshotsEnabled: boolean;
+}
+
+interface McpExecResult {
+  result: unknown;
+  isToolError: boolean;
+  toolDurationMs: number;
 }
 
 export class Agent {
@@ -208,33 +256,37 @@ export class Agent {
 
   async run(prompt: string): Promise<void> {
     if (!this.model) this.model = await resolveModel(this.client);
+    const model = this.model;
+
+    const openaiTools = await this._connectAndPrepareTools(prompt, model);
+    await this._initPipelineCollector(prompt);
+    const flags = await this._initScreenshotter();
+    const messages = await this._buildInitialMessages(prompt);
+
+    await this._runIterations(messages, openaiTools, model, flags);
+
+    this.mcp.disconnect();
+
+    if (this.collector) {
+      await this.collector.finishSession('completed');
+    }
+  }
+
+  // ─── Run setup ────────────────────────────────────────────────────────────────
+
+  private async _connectAndPrepareTools(
+    prompt: string,
+    model: string,
+  ): Promise<OpenAI.Chat.ChatCompletionTool[]> {
     console.log(`\nTask: ${prompt}`);
     console.log('─'.repeat(50));
-    console.log(`Model: ${this.model}`);
+    console.log(`Model: ${model}`);
     console.log('Connecting to Playwright MCP server...');
 
     const tools = await this.mcp.connect();
     console.log(`Connected. ${tools.length} tools available.`);
     if (process.env.DEBUG) {
       console.log('Tools:', tools.map((t) => t.name).join(', '));
-    }
-
-    // Initialize pipeline session collector
-    if (process.env.PIPELINE_ENABLED !== 'false') {
-      const sessionId = new Date()
-        .toISOString()
-        .replace(/[:.]/g, '-')
-        .replace('T', '_')
-        .slice(0, 19);
-      const dataDir = resolve(process.cwd(), 'data');
-      this.collector = new SessionCollector(dataDir, sessionId);
-      await this.collector.init(prompt, '');
-    }
-
-    const screenshotsEnabled = process.env.SCREENSHOTS_ENABLED !== 'false';
-    const snapshotsEnabled = process.env.SNAPSHOTS_ENABLED !== 'false';
-    if (screenshotsEnabled || snapshotsEnabled) {
-      await this.screenshotter.init();
     }
 
     // Convert MCP tool schemas to OpenAI function format
@@ -247,7 +299,32 @@ export class Agent {
         parameters: TOOL_SCHEMAS[tool.name] ?? { type: 'object', properties: {} },
       },
     }));
+    return openaiTools;
+  }
 
+  private async _initPipelineCollector(prompt: string): Promise<void> {
+    if (process.env.PIPELINE_ENABLED === 'false') return;
+
+    const sessionId = new Date()
+      .toISOString()
+      .replace(/[:.]/g, '-')
+      .replace('T', '_')
+      .slice(0, 19);
+    const dataDir = resolve(process.cwd(), 'data');
+    this.collector = new SessionCollector(dataDir, sessionId);
+    await this.collector.init(prompt, '');
+  }
+
+  private async _initScreenshotter(): Promise<RunFlags> {
+    const screenshotsEnabled = process.env.SCREENSHOTS_ENABLED !== 'false';
+    const snapshotsEnabled = process.env.SNAPSHOTS_ENABLED !== 'false';
+    if (screenshotsEnabled || snapshotsEnabled) {
+      await this.screenshotter.init();
+    }
+    return { screenshotsEnabled, snapshotsEnabled };
+  }
+
+  private async _buildInitialMessages(prompt: string): Promise<OpenAI.Chat.ChatCompletionMessageParam[]> {
     const visitSummary = await getVisitSummary(20);
     const pageSummary = await getPageSummary(15);
 
@@ -258,7 +335,17 @@ export class Agent {
       { role: 'system', content: systemContent },
       { role: 'user', content: prompt },
     ];
+    return messages;
+  }
 
+  // ─── Iteration loop ─────────────────────────────────────────────────────────────
+
+  private async _runIterations(
+    messages: OpenAI.Chat.ChatCompletionMessageParam[],
+    openaiTools: OpenAI.Chat.ChatCompletionTool[],
+    model: string,
+    flags: RunFlags,
+  ): Promise<void> {
     const maxIterations = parseInt(process.env.MAX_ITERATIONS || '60', 10);
 
     for (let iteration = 1; iteration <= maxIterations; iteration++) {
@@ -268,183 +355,276 @@ export class Agent {
       }
       console.log(`\n[Step ${iteration}] Thinking...`);
 
-      const response = await this.client.chat.completions.create({
-        model: this.model,
-        messages,
-        tools: openaiTools,
-        tool_choice: 'auto',
-        temperature: 0.2,
-      });
-
-      const choice = response.choices[0];
-      if (!choice) {
-        throw new Error('OpenAI response contained no choices.');
-      }
-      const message = choice.message;
+      const message = await this._requestNextMessage(messages, openaiTools, model);
       messages.push(message);
-
       if (message.content) {
         console.log(`  💭 ${message.content}`);
       }
 
-      // No tool calls → agent is done
-      if (!message.tool_calls || message.tool_calls.length === 0) {
-        console.log('\n' + '─'.repeat(50));
-        console.log('Done.\n');
-        if (message.content) {
-          console.log(message.content);
-        }
+      const toolCalls = this._getToolCalls(message);
+      if (!toolCalls) {
+        this._logCompletion(message);
         break;
       }
 
-      // Execute tool calls sequentially
-      for (const toolCall of message.tool_calls) {
-        const toolName = toolCall.function.name;
-        let toolArgs: Record<string, unknown>;
-        try {
-          toolArgs = JSON.parse(toolCall.function.arguments || '{}') as Record<string, unknown>;
-        } catch {
-          toolArgs = {};
-        }
+      await this._executeToolCalls(toolCalls, messages, flags);
 
-        console.log(`\n  → ${toolName}`, this._formatArgs(toolArgs));
-
-        // Registry tools are handled locally — skip MCP entirely
-        if (REGISTRY_TOOLS.has(toolName)) {
-          let registryResult: string;
-          try {
-            if (toolName === 'registry_get_page_components') {
-              registryResult = await toolGetPageComponents(String(toolArgs.page ?? ''));
-            } else {
-              registryResult = await toolSearchComponents(String(toolArgs.query ?? ''));
-            }
-          } catch (err) {
-            registryResult = `Registry error: ${(err as Error).message}`;
-          }
-          console.log(`    Result: ${registryResult.slice(0, 300)}${registryResult.length > 300 ? '…' : ''}`);
-          messages.push({ role: 'tool', tool_call_id: toolCall.id, content: registryResult });
-          continue;
-        }
-
-        // Pipeline: start step collection BEFORE executing action tools
-        if (this.collector && ACTION_TOOLS.has(toolName)) {
-          await this._beginCollectorStep(toolName, toolArgs);
-        }
-
-        let result;
-        let isToolError = false;
-        const toolStartMs = Date.now();
-        try {
-          result = await this.mcp.callTool(toolName, toolArgs);
-        } catch (err) {
-          const errorMsg = (err as Error).message;
-          result = { content: [{ type: 'text', text: `Error: ${errorMsg}` }] };
-          isToolError = true;
-          console.error(`    Error: ${errorMsg}`);
-          if (this.logger) {
-            await this.logger.logError(toolName, toolArgs, errorMsg);
-          }
-        }
-        const toolDurationMs = Date.now() - toolStartMs;
-
-        // Feed tool result back to LLM
-        const content = this._extractTextContent(result);
-        if (content) {
-          console.log(`    Result: ${content.slice(0, 300)}${content.length > 300 ? '…' : ''}`);
-        }
-
-        // Pipeline: cache ARIA content for use as "before" on next action
-        if (toolName === 'browser_snapshot' && !isToolError && content) {
-          this.lastAriaContent = content;
-        }
-
-        // Pipeline: complete step AFTER action executes
-        if (this.collector && this.activeStepId && ACTION_TOOLS.has(toolName)) {
-          await this._endCollectorStep(isToolError);
-        }
-
-        // Capture screenshot/snapshot after each tool call if enabled
-        let screenshotPath: string | undefined;
-        if (screenshotsEnabled || snapshotsEnabled) {
-          const snapshotText =
-            toolName === 'browser_snapshot'
-              ? content
-              : this._extractTextContent(await this.mcp.snapshot());
-
-          if (snapshotText) {
-            const isInteraction = INTERACTION_TOOLS.has(toolName);
-            const capture = await this._captureIfPageChanged(
-              toolName, toolArgs, snapshotText, isInteraction,
-              screenshotsEnabled, snapshotsEnabled,
-            );
-            screenshotPath = capture.screenshotPath ?? undefined;
-            // Record visit on URL change
-            if (capture.urlChanged && this.lastPageUrl) {
-              await recordVisit(this.lastPageUrl);
-            }
-          }
-        } else if (toolName === 'browser_navigate' && typeof toolArgs.url === 'string') {
-          await recordVisit(toolArgs.url);
-        }
-
-        // Persist step to MongoDB
-        if (this.mongoRunId) {
-          this.mongoStepNumber++;
-          await saveStep({
-            runId: this.mongoRunId,
-            stepNumber: this.mongoStepNumber,
-            action: toolName,
-            args: toolArgs,
-            url: this.lastPageUrl,
-            screenshotPath: screenshotPath ?? null,
-            result: content ? content.slice(0, 1000) : null,
-            durationMs: toolDurationMs,
-            isError: isToolError,
-          });
-        }
-
-        messages.push({
-          role: 'tool',
-          tool_call_id: toolCall.id,
-          content: content || 'OK',
-        });
-
-        // After navigation: inject stored DOM context for the new URL (if any)
-        if (toolName === 'browser_navigate' && !isToolError) {
-          const navUrl = typeof toolArgs.url === 'string' ? toolArgs.url : this.lastPageUrl;
-          if (navUrl) {
-            const domDetail = await getComponentContextForUrl(navUrl);
-            if (domDetail) {
-              messages.push({
-                role: 'user',
-                content: `[Stored page context for ${navUrl}]\n${domDetail}`,
-              });
-            }
-          }
-        }
-      }
-
-      // Каждые 10 итераций проверяем на зависание агента
-      const loopResult = checkForLoop(iteration, messages);
-      if (loopResult.isLoop) {
-        console.log('\n⚠️  Loop detected! ' + loopResult.summary);
-        console.log('Stopping execution to prevent infinite loop.');
-        if (this.logger) {
-          await this.logger.logResponse('LoopDetector', `LOOP DETECTED: ${loopResult.summary}`);
-        }
-        break;
-      }
+      if (await this._checkAndLogLoop(iteration, messages)) break;
 
       if (iteration === maxIterations) {
         console.log('\nMax iterations reached. Stopping.');
       }
     }
+  }
 
-    this.mcp.disconnect();
+  private async _requestNextMessage(
+    messages: OpenAI.Chat.ChatCompletionMessageParam[],
+    openaiTools: OpenAI.Chat.ChatCompletionTool[],
+    model: string,
+  ): Promise<OpenAI.Chat.ChatCompletionMessage> {
+    const response = await this.client.chat.completions.create({
+      model,
+      messages,
+      tools: openaiTools,
+      tool_choice: 'auto',
+      temperature: 0.2,
+    });
 
-    if (this.collector) {
-      await this.collector.finishSession('completed');
+    const choice = response.choices[0];
+    if (!choice) {
+      throw new Error('OpenAI response contained no choices.');
     }
+    return choice.message;
+  }
+
+  private _getToolCalls(
+    message: OpenAI.Chat.ChatCompletionMessage,
+  ): OpenAI.Chat.ChatCompletionMessageToolCall[] | null {
+    const toolCalls = message.tool_calls;
+    return toolCalls && toolCalls.length > 0 ? toolCalls : null;
+  }
+
+  private _logCompletion(message: OpenAI.Chat.ChatCompletionMessage): void {
+    console.log('\n' + '─'.repeat(50));
+    console.log('Done.\n');
+    if (message.content) {
+      console.log(message.content);
+    }
+  }
+
+  private async _checkAndLogLoop(
+    iteration: number,
+    messages: OpenAI.Chat.ChatCompletionMessageParam[],
+  ): Promise<boolean> {
+    const loopResult = checkForLoop(iteration, messages);
+    if (!loopResult.isLoop) return false;
+
+    console.log('\n⚠️  Loop detected! ' + loopResult.summary);
+    console.log('Stopping execution to prevent infinite loop.');
+    if (this.logger) {
+      await this.logger.logResponse('LoopDetector', `LOOP DETECTED: ${loopResult.summary}`);
+    }
+    return true;
+  }
+
+  // ─── Tool-call dispatch ───────────────────────────────────────────────────────
+
+  private async _executeToolCalls(
+    toolCalls: OpenAI.Chat.ChatCompletionMessageToolCall[],
+    messages: OpenAI.Chat.ChatCompletionMessageParam[],
+    flags: RunFlags,
+  ): Promise<void> {
+    for (const toolCall of toolCalls) {
+      await this._dispatchToolCall(toolCall, messages, flags);
+    }
+  }
+
+  private async _dispatchToolCall(
+    toolCall: OpenAI.Chat.ChatCompletionMessageToolCall,
+    messages: OpenAI.Chat.ChatCompletionMessageParam[],
+    flags: RunFlags,
+  ): Promise<void> {
+    const call = this._parseToolCall(toolCall);
+    console.log(`\n  → ${call.name}`, this._formatArgs(call.args));
+
+    if (REGISTRY_TOOLS.has(call.name)) {
+      await this._handleRegistryTool(call, messages);
+      return;
+    }
+
+    await this._handleMcpToolCall(call, messages, flags);
+  }
+
+  private _parseToolCall(toolCall: OpenAI.Chat.ChatCompletionMessageToolCall): ParsedToolCall {
+    let args: Record<string, unknown>;
+    try {
+      args = JSON.parse(toolCall.function.arguments || '{}') as Record<string, unknown>;
+    } catch {
+      args = {};
+    }
+    return { id: toolCall.id, name: toolCall.function.name, args };
+  }
+
+  private async _handleRegistryTool(
+    call: ParsedToolCall,
+    messages: OpenAI.Chat.ChatCompletionMessageParam[],
+  ): Promise<void> {
+    let registryResult: string;
+    try {
+      if (call.name === 'registry_get_page_components') {
+        const page = typeof call.args.page === 'string' ? call.args.page : '';
+        registryResult = await toolGetPageComponents(page);
+      } else {
+        const query = typeof call.args.query === 'string' ? call.args.query : '';
+        registryResult = await toolSearchComponents(query);
+      }
+    } catch (err) {
+      registryResult = `Registry error: ${(err as Error).message}`;
+    }
+    console.log(`    Result: ${registryResult.slice(0, 300)}${registryResult.length > 300 ? '…' : ''}`);
+    messages.push({ role: 'tool', tool_call_id: call.id, content: registryResult });
+  }
+
+  private async _handleMcpToolCall(
+    call: ParsedToolCall,
+    messages: OpenAI.Chat.ChatCompletionMessageParam[],
+    flags: RunFlags,
+  ): Promise<void> {
+    if (this._shouldTrackStep(call.name)) {
+      await this._beginCollectorStep(call.name, call.args);
+    }
+
+    const exec = await this._executeMcpTool(call);
+    const content = this._extractTextContent(exec.result);
+    if (content) {
+      console.log(`    Result: ${content.slice(0, 300)}${content.length > 300 ? '…' : ''}`);
+    }
+
+    if (this._shouldCacheAria(call.name, exec.isToolError, content)) {
+      this.lastAriaContent = content;
+    }
+
+    if (this._shouldEndStep(call.name)) {
+      await this._endCollectorStep(exec.isToolError);
+    }
+
+    const screenshotPath = await this._captureAfterToolCall(call, content, flags);
+    await this._persistStep(call, content, screenshotPath, exec);
+
+    messages.push({ role: 'tool', tool_call_id: call.id, content: content || 'OK' });
+
+    await this._injectPostNavigationContext(call, exec.isToolError, messages);
+  }
+
+  private _shouldTrackStep(toolName: string): boolean {
+    return this.collector !== null && ACTION_TOOLS.has(toolName);
+  }
+
+  private _shouldCacheAria(toolName: string, isToolError: boolean, content: string): boolean {
+    return toolName === 'browser_snapshot' && !isToolError && content !== '';
+  }
+
+  private _shouldEndStep(toolName: string): boolean {
+    return this.collector !== null && this.activeStepId !== null && ACTION_TOOLS.has(toolName);
+  }
+
+  private async _executeMcpTool(call: ParsedToolCall): Promise<McpExecResult> {
+    const toolStartMs = Date.now();
+    try {
+      const result = await this.mcp.callTool(call.name, call.args);
+      return { result, isToolError: false, toolDurationMs: Date.now() - toolStartMs };
+    } catch (err) {
+      const errorMsg = (err as Error).message;
+      console.error(`    Error: ${errorMsg}`);
+      if (this.logger) {
+        await this.logger.logError(call.name, call.args, errorMsg);
+      }
+      return {
+        result: { content: [{ type: 'text', text: `Error: ${errorMsg}` }] },
+        isToolError: true,
+        toolDurationMs: Date.now() - toolStartMs,
+      };
+    }
+  }
+
+  private async _recordNavigateVisitIfApplicable(call: ParsedToolCall): Promise<void> {
+    if (call.name === 'browser_navigate' && typeof call.args.url === 'string') {
+      await recordVisit(call.args.url);
+    }
+  }
+
+  private async _recordVisitOnUrlChange(urlChanged: boolean): Promise<void> {
+    if (urlChanged && this.lastPageUrl) {
+      await recordVisit(this.lastPageUrl);
+    }
+  }
+
+  private async _captureAfterToolCall(
+    call: ParsedToolCall,
+    content: string,
+    flags: RunFlags,
+  ): Promise<string | undefined> {
+    if (!flags.screenshotsEnabled && !flags.snapshotsEnabled) {
+      await this._recordNavigateVisitIfApplicable(call);
+      return undefined;
+    }
+
+    const snapshotText = call.name === 'browser_snapshot'
+      ? content
+      : this._extractTextContent(await this.mcp.snapshot());
+    if (!snapshotText) return undefined;
+
+    const isInteraction = INTERACTION_TOOLS.has(call.name);
+    const ctx: CaptureContext = {
+      toolName: call.name,
+      toolArgs: call.args,
+      snapshotText,
+      isInteraction,
+      screenshotsEnabled: flags.screenshotsEnabled,
+      snapshotsEnabled: flags.snapshotsEnabled,
+    };
+    const capture = await this._captureIfPageChanged(ctx);
+    await this._recordVisitOnUrlChange(capture.urlChanged);
+    return capture.screenshotPath ?? undefined;
+  }
+
+  private async _persistStep(
+    call: ParsedToolCall,
+    content: string,
+    screenshotPath: string | undefined,
+    exec: McpExecResult,
+  ): Promise<void> {
+    if (!this.mongoRunId) return;
+    this.mongoStepNumber++;
+    await saveStep({
+      runId: this.mongoRunId,
+      stepNumber: this.mongoStepNumber,
+      action: call.name,
+      args: call.args,
+      url: this.lastPageUrl,
+      screenshotPath: screenshotPath ?? null,
+      result: content ? content.slice(0, 1000) : null,
+      durationMs: exec.toolDurationMs,
+      isError: exec.isToolError,
+    });
+  }
+
+  private async _injectPostNavigationContext(
+    call: ParsedToolCall,
+    isToolError: boolean,
+    messages: OpenAI.Chat.ChatCompletionMessageParam[],
+  ): Promise<void> {
+    if (call.name !== 'browser_navigate' || isToolError) return;
+    const navUrl = typeof call.args.url === 'string' ? call.args.url : this.lastPageUrl;
+    if (!navUrl) return;
+
+    const domDetail = await getComponentContextForUrl(navUrl);
+    if (!domDetail) return;
+
+    messages.push({
+      role: 'user',
+      content: `[Stored page context for ${navUrl}]\n${domDetail}`,
+    });
   }
 
   private _extractTextContent(result: unknown): string {
@@ -471,6 +651,22 @@ export class Agent {
 
   // ─── Pipeline helpers ────────────────────────────────────────────────────────
 
+  private _lineMatchesRef(line: string, ref: string): boolean {
+    return line.includes(`[ref=${ref}]`) || line.includes(`ref="${ref}"`);
+  }
+
+  private _extractAriaFromLine(line: string): { ariaRole: string | null; ariaName: string | null } | null {
+    // Pattern: "  - button "Submit" [ref=e12]"
+    const withName = line.match(/-\s+([a-z][\w-]*)\s+"([^"]+)"/i);
+    if (withName?.[1] && withName[2] !== undefined) {
+      return { ariaRole: withName[1].toLowerCase(), ariaName: withName[2] };
+    }
+    // Pattern: "  - button [ref=e12]" (no accessible name)
+    const noName = line.match(/-\s+([a-z][\w-]*)\s+\[/i);
+    if (noName?.[1]) return { ariaRole: noName[1].toLowerCase(), ariaName: null };
+    return null;
+  }
+
   /**
    * Parses the Playwright MCP ARIA snapshot text to find structured role/name for a given ref.
    * Snapshot lines look like:  "  - button \"Submit\" [ref=e12]"
@@ -481,79 +677,84 @@ export class Agent {
     ref: string,
   ): { ariaRole: string | null; ariaName: string | null } {
     for (const line of content.split('\n')) {
-      if (!line.includes(`[ref=${ref}]`) && !line.includes(`ref="${ref}"`)) continue;
-      // Pattern: "  - button "Submit" [ref=e12]"
-      const withName = line.match(/-\s+([a-z][\w-]*)\s+"([^"]+)"/i);
-      if (withName?.[1] && withName[2] !== undefined) {
-        return { ariaRole: withName[1].toLowerCase(), ariaName: withName[2] };
-      }
-      // Pattern: "  - button [ref=e12]" (no accessible name)
-      const noName = line.match(/-\s+([a-z][\w-]*)\s+\[/i);
-      if (noName?.[1]) return { ariaRole: noName[1].toLowerCase(), ariaName: null };
+      if (!this._lineMatchesRef(line, ref)) continue;
+      const parsed = this._extractAriaFromLine(line);
+      if (parsed) return parsed;
     }
     return { ariaRole: null, ariaName: null };
+  }
+
+  // Enrich action.element with structured ariaRole/ariaName parsed from the ARIA snapshot.
+  // buildActionData only captures the human-readable description; we need the real ARIA role
+  // and name so that IdentityResolutionAgent can do STRONG matching.
+  private _enrichElementFromAriaSnapshot(action: ActionData, ref: string): void {
+    if (!this.lastAriaContent || !action.element) return;
+    const parsed = this._parseElementFromSnapshot(this.lastAriaContent, ref);
+    if (parsed.ariaRole) action.element.ariaRole = parsed.ariaRole;
+    if (parsed.ariaName) action.element.ariaName = parsed.ariaName;
+  }
+
+  // Enrich action.element with real DOM attrs via browser_evaluate(ref).
+  // This is the source of truth for selectors — no more guessing.
+  private async _enrichElementFromDom(action: ActionData, ref: string): Promise<void> {
+    if (!action.element) return;
+    try {
+      const attrs = await this.mcp.evaluateAttrsOnRef(ref);
+      if (!attrs) return;
+      action.element.attrs = attrs;
+      if (attrs.testid) action.element.testid = attrs.testid;
+      if (!action.element.tagName) action.element.tagName = attrs.tag;
+      if (!action.element.text && attrs.text) action.element.text = attrs.text;
+    } catch {
+      // best-effort
+    }
+  }
+
+  // Save structured DOM dump as the sole pre-action artifact.
+  // Legacy aria YAML / dom HTML files are no longer written — the JSON
+  // dump from browser_evaluate carries all the info downstream analyzers need.
+  private async _captureDomDump(stepId: string, collector: SessionCollector): Promise<string> {
+    try {
+      const dump = await this.mcp.dumpInteractiveDom();
+      if (dump && Array.isArray(dump)) {
+        return await collector.saveDomDump(stepId, dump);
+      }
+      console.warn(`[Agent] dumpInteractiveDom returned null at ${stepId}`);
+      return '';
+    } catch (err) {
+      console.warn(`[Agent] dumpInteractiveDom failed at ${stepId}: ${(err as Error).message}`);
+      return '';
+    }
   }
 
   private async _beginCollectorStep(
     toolName: string,
     toolArgs: Record<string, unknown>,
   ): Promise<void> {
-    if (!this.collector) return;
+    const collector = this.collector;
+    if (!collector) return;
 
-    const stepId = this.collector.nextStepId();
+    const stepId = collector.nextStepId();
     this.activeStepId = stepId;
 
     const action = buildActionData(toolName, toolArgs);
 
-    // Enrich action.element with structured ariaRole/ariaName parsed from the ARIA snapshot.
-    // buildActionData only captures the human-readable description; we need the real ARIA role
-    // and name so that IdentityResolutionAgent can do STRONG matching.
     const ref = typeof toolArgs.ref === 'string' ? toolArgs.ref : null;
-    if (ref && this.lastAriaContent && action.element) {
-      const parsed = this._parseElementFromSnapshot(this.lastAriaContent, ref);
-      if (parsed.ariaRole) action.element.ariaRole = parsed.ariaRole;
-      if (parsed.ariaName) action.element.ariaName = parsed.ariaName;
+    if (ref) {
+      this._enrichElementFromAriaSnapshot(action, ref);
+      await this._enrichElementFromDom(action, ref);
     }
 
-    // Enrich action.element with real DOM attrs via browser_evaluate(ref).
-    // This is the source of truth for selectors — no more guessing.
-    if (ref && action.element) {
-      try {
-        const attrs = await this.mcp.evaluateAttrsOnRef(ref);
-        if (attrs) {
-          action.element.attrs = attrs;
-          if (attrs.testid) action.element.testid = attrs.testid;
-          if (!action.element.tagName) action.element.tagName = attrs.tag;
-          if (!action.element.text && attrs.text) action.element.text = attrs.text;
-        }
-      } catch {
-        // best-effort
-      }
-    }
-
-    // Save structured DOM dump as the sole pre-action artifact.
-    // Legacy aria YAML / dom HTML files are no longer written — the JSON
-    // dump from browser_evaluate carries all the info downstream analyzers need.
-    let domFile = '';
-    try {
-      const dump = await this.mcp.dumpInteractiveDom();
-      if (dump && Array.isArray(dump)) {
-        domFile = await this.collector.saveDomDump(stepId, dump);
-      } else {
-        console.warn(`[Agent] dumpInteractiveDom returned null at ${stepId}`);
-      }
-    } catch (err) {
-      console.warn(`[Agent] dumpInteractiveDom failed at ${stepId}: ${(err as Error).message}`);
-    }
+    const domFile = await this._captureDomDump(stepId, collector);
     const ariaFile = '';
 
-    const storageFile = await this.collector.saveStorage(stepId, {
+    const storageFile = await collector.saveStorage(stepId, {
       localStorage: {},
       sessionStorage: {},
       cookies: [],
     });
 
-    await this.collector.beginStep(stepId, this.lastPageUrl ?? '', action, {
+    await collector.beginStep(stepId, this.lastPageUrl ?? '', action, {
       ariaSnapshotFile: ariaFile,
       domFile,
       storageFile,
@@ -602,96 +803,114 @@ export class Agent {
     return match?.[1] ?? null;
   }
 
-  // Returns urlChanged flag and optional screenshotPath.
-  private async _captureIfPageChanged(
-    sourceToolName: string,
-    sourceToolArgs: Record<string, unknown>,
-    snapshotText: string,
-    isInteraction: boolean,
-    screenshotsEnabled: boolean,
-    snapshotsEnabled: boolean,
-  ): Promise<{ urlChanged: boolean; screenshotPath?: string }> {
-    this.stepCount++;
+  private async _logSnapshotIfEnabled(ctx: CaptureContext): Promise<void> {
+    if (!ctx.snapshotsEnabled) return;
+    const snapshotPath = await this.screenshotter.saveSnapshot(
+      this.stepCount, ctx.toolName, ctx.toolArgs, ctx.snapshotText,
+    );
+    const filename = this.screenshotter.buildFilename(
+      this.stepCount, ctx.toolName, ctx.toolArgs,
+      this.screenshotter.buildComparisonKey(ctx.toolName, ctx.toolArgs), '.txt',
+    );
+    console.log(`    Snapshot: ${snapshotPath ?? `./screenshots/snapshots-incoming/${filename}`}`);
+  }
 
-    if (snapshotsEnabled) {
-      const snapshotPath = await this.screenshotter.saveSnapshot(
-        this.stepCount,
-        sourceToolName,
-        sourceToolArgs,
-        snapshotText
-      );
-      const filename = this.screenshotter.buildFilename(
-        this.stepCount,
-        sourceToolName,
-        sourceToolArgs,
-        this.screenshotter.buildComparisonKey(sourceToolName, sourceToolArgs),
-        '.txt'
-      );
-      console.log(`    Snapshot: ${snapshotPath ?? `./screenshots/snapshots-incoming/${filename}`}`);
-    }
+  private _decodeScreenshotData(data: string): string {
+    if (!data.startsWith('data:image/')) return data;
+    const [, payload] = data.split(',');
+    return payload ?? '';
+  }
 
-    const currentUrl = this._extractPageUrl(snapshotText);
-    const urlChanged = currentUrl !== null && currentUrl !== this.lastPageUrl;
-
-    // Detect same-page UI state change: dropdown opened, hidden panel revealed, navbar updated, etc.
-    const uiStateChanged =
-      isInteraction && snapshotText !== this.lastCapturedSnapshot;
-
-    if (!screenshotsEnabled) {
-      if (urlChanged) this.lastPageUrl = currentUrl;
-      return { urlChanged };
-    }
-
-    if (!urlChanged && !uiStateChanged) {
-      console.log(`    Screenshot skipped: page state unchanged (${currentUrl ?? 'URL unknown'})`);
-      return { urlChanged: false };
-    }
-
-    if (urlChanged) {
-      this.lastPageUrl = currentUrl;
-      console.log(`    New page: ${currentUrl}`);
-    } else {
-      console.log(`    UI state changed on: ${currentUrl ?? 'current page'}`);
-    }
-
-    this.stepCount++;
+  private async _getScreenshotBase64(): Promise<string | undefined> {
     const raw = await this.mcp.screenshot();
     if (!raw?.content) {
       console.log('    Screenshot: failed (null result)');
-      return { urlChanged };
+      return undefined;
     }
 
     const imageContent = raw.content.find((c) => c.type === 'image' || c.type === 'image_url');
     const data = imageContent?.data ?? imageContent?.url;
     if (!data) {
       console.log('    Screenshot: no image data');
-      return { urlChanged };
+      return undefined;
     }
 
-    let base64: string;
-    if (data.startsWith('data:image/')) {
-      const [, payload] = data.split(',');
-      base64 = payload ?? '';
-    } else {
-      base64 = data;
-    }
-
+    const base64 = this._decodeScreenshotData(data);
     if (!base64) {
       console.log('    Screenshot: empty base64 payload');
-      return { urlChanged };
+      return undefined;
     }
+    return base64;
+  }
 
-    const saved = await this.screenshotter.saveBase64(this.stepCount, sourceToolName, sourceToolArgs, base64, currentUrl);
+  private async _fetchAndSaveScreenshot(
+    ctx: CaptureContext,
+    currentUrl: string | null,
+  ): Promise<string | undefined> {
+    const base64 = await this._getScreenshotBase64();
+    if (!base64) return undefined;
+
+    const saved = await this.screenshotter.saveBase64(this.stepCount, ctx.toolName, ctx.toolArgs, base64, currentUrl);
     if (!saved) {
       console.log('    Screenshot: failed to save');
-      return { urlChanged };
+      return undefined;
     }
 
     // Update baseline — this snapshot is now what the last screenshot represents
-    this.lastCapturedSnapshot = snapshotText;
-
+    this.lastCapturedSnapshot = ctx.snapshotText;
     this.lastScreenshotPath = saved.path;
     console.log(`    Screenshot saved: ${saved.path}`);
-    return { urlChanged, screenshotPath: saved.path };
+    return saved.path;
+  }
+
+  // Detect same-page UI state change: dropdown opened, hidden panel revealed, navbar updated, etc.
+  private _computeChangeState(
+    ctx: CaptureContext,
+    currentUrl: string | null,
+  ): { urlChanged: boolean; uiStateChanged: boolean } {
+    const urlChanged = currentUrl !== null && currentUrl !== this.lastPageUrl;
+    const uiStateChanged = ctx.isInteraction && ctx.snapshotText !== this.lastCapturedSnapshot;
+    return { urlChanged, uiStateChanged };
+  }
+
+  private _logScreenshotSkipped(currentUrl: string | null): void {
+    console.log(`    Screenshot skipped: page state unchanged (${currentUrl ?? 'URL unknown'})`);
+  }
+
+  private _logPageChange(urlChanged: boolean, currentUrl: string | null): void {
+    if (urlChanged) {
+      this.lastPageUrl = currentUrl;
+      console.log(`    New page: ${currentUrl}`);
+    } else {
+      console.log(`    UI state changed on: ${currentUrl ?? 'current page'}`);
+    }
+  }
+
+  // Returns urlChanged flag and optional screenshotPath.
+  private async _captureIfPageChanged(
+    ctx: CaptureContext,
+  ): Promise<{ urlChanged: boolean; screenshotPath?: string }> {
+    this.stepCount++;
+    await this._logSnapshotIfEnabled(ctx);
+
+    const currentUrl = this._extractPageUrl(ctx.snapshotText);
+    const { urlChanged, uiStateChanged } = this._computeChangeState(ctx, currentUrl);
+
+    if (!ctx.screenshotsEnabled) {
+      if (urlChanged) this.lastPageUrl = currentUrl;
+      return { urlChanged };
+    }
+
+    if (!urlChanged && !uiStateChanged) {
+      this._logScreenshotSkipped(currentUrl);
+      return { urlChanged: false };
+    }
+
+    this._logPageChange(urlChanged, currentUrl);
+
+    this.stepCount++;
+    const screenshotPath = await this._fetchAndSaveScreenshot(ctx, currentUrl);
+    if (screenshotPath === undefined) return { urlChanged };
+    return { urlChanged, screenshotPath };
   }
 }

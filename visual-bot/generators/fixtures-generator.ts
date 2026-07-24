@@ -9,6 +9,8 @@ import { runLlm } from '../agents/test-gen/llm-runner.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+type NetworkAction = NonNullable<ComponentRecord['actions'][0]['network']>;
+
 export class FixturesGenerator {
   async generate(registryPath: string, fixturesDir: string): Promise<void> {
     if (!existsSync(registryPath)) {
@@ -16,7 +18,7 @@ export class FixturesGenerator {
       return;
     }
 
-    const registry: ComponentRegistry = JSON.parse(await readFile(registryPath, 'utf-8'));
+    const registry = JSON.parse(await readFile(registryPath, 'utf-8')) as ComponentRegistry;
     const components = Object.values(registry.components);
 
     const networkComponents = components.filter((c) =>
