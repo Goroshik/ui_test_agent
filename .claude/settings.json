@@ -1,0 +1,56 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "yarn --cwd \"$CLAUDE_PROJECT_DIR\" gate:quick",
+            "timeout": 180
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "yarn --cwd \"$CLAUDE_PROJECT_DIR\" gate",
+            "timeout": 600
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "deny": [
+      "Edit(tsconfig.json)",
+      "Write(tsconfig.json)",
+      "Edit(eslint.config.js)",
+      "Write(eslint.config.js)",
+      "Edit(vitest.config.ts)",
+      "Write(vitest.config.ts)",
+      "Edit(crap4ts.config.ts)",
+      "Write(crap4ts.config.ts)",
+      "Edit(stryker.conf.json)",
+      "Write(stryker.conf.json)",
+      "Edit(package.json)",
+      "Write(package.json)",
+      "Edit(.claude/settings.json)",
+      "Write(.claude/settings.json)",
+      "Edit(visual-bot/utils.test.ts)",
+      "Write(visual-bot/utils.test.ts)",
+      "Edit(visual-bot/generators/edge-case-deriver.test.ts)",
+      "Write(visual-bot/generators/edge-case-deriver.test.ts)",
+      "Edit(visual-bot/generators/edge-case-deriver.property.test.ts)",
+      "Write(visual-bot/generators/edge-case-deriver.property.test.ts)",
+      "Edit(visual-bot/agents/dom-components/hasher.property.test.ts)",
+      "Write(visual-bot/agents/dom-components/hasher.property.test.ts)",
+      "Edit(visual-bot/agents/pipeline/identity-resolution-agent.property.test.ts)",
+      "Write(visual-bot/agents/pipeline/identity-resolution-agent.property.test.ts)"
+    ]
+  }
+}

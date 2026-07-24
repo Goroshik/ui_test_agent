@@ -17,7 +17,9 @@
     "coverage": "vitest run --coverage",
     "crap": "crap4ts -c coverage/coverage-final.json",
     "crap:changed": "crap4ts -c coverage/coverage-final.json --changed-since origin/master",
-    "mutation": "stryker run"
+    "mutation": "stryker run",
+    "gate": "yarn typecheck && yarn lint && yarn coverage && yarn crap && yarn mutation",
+    "gate:quick": "yarn typecheck && yarn lint"
   },
   "dependencies": {
     "@playwright/mcp": "^0.0.75",
