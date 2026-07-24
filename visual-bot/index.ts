@@ -7,10 +7,9 @@ import { readdir, rm } from 'fs/promises';
 import { existsSync } from 'fs';
 import { resolveModel } from './utils.js';
 import { createProvider } from './llm-provider.js';
-import type { LlmProvider } from './llm-provider.js';
 import { OllamaModelManager } from './ollama-model-manager.js';
 import { Agent } from './agents/main/agent.js';
-import { PipelineRunner } from './agents/pipeline/pipeline-runner.js';
+import { runAnalysisPipeline } from './run-analysis-pipeline.js';
 import { PlannerAgent } from './agents/planner/planner-agent.js';
 import { MemoryAnalysisAgent } from './agents/planner/memory-analysis-agent.js';
 import { PostRunCompareAgent } from './agents/post-run/post-run-snapshot-compare-agent.js';
@@ -59,36 +58,6 @@ async function verifyAndDecideRetry(params: VerifyParams): Promise<VerifyResult>
     lastFailReason: verification.reason,
     shouldRetry: attempt <= maxRetries,
   };
-}
-
-interface RunPipelineParams {
-  agent: Agent;
-  analyzer: LlmProvider;
-  mm: OllamaModelManager;
-  mainModel: string | undefined;
-}
-
-/** Runs the analysis pipeline on the collected session data, if enabled and a session exists. */
-async function runAnalysisPipeline(params: RunPipelineParams): Promise<void> {
-  const { agent, analyzer, mm, mainModel } = params;
-  const pipelineEnabled = process.env.PIPELINE_ENABLED !== 'false';
-  if (!pipelineEnabled) return;
-
-  const sessionDir = agent.getSessionDirectory();
-  if (!sessionDir) return;
-
-  const dataDir = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'data');
-  const pipelineModel =
-    analyzer.model || (analyzer.kind === 'ollama' ? await resolveModel(analyzer.client) : '');
-  if (!pipelineModel) throw new Error('No analyzer model configured for pipeline');
-
-  const runPipeline = () => new PipelineRunner(analyzer.client, pipelineModel).run(sessionDir, dataDir);
-
-  if (analyzer.kind === 'ollama') {
-    await mm.withModel(analyzer.model || mainModel, runPipeline);
-  } else {
-    await runPipeline();
-  }
 }
 
 async function cleanIncomingDirs(): Promise<void> {
