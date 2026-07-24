@@ -38,14 +38,7 @@ function extractKeywords(task: string): string[] {
 export class MemoryAnalysisAgent {
   constructor(private readonly client: OpenAI, private readonly modelOverride?: string) {}
 
-  async analyze(userTask: string): Promise<string> {
-    const allPages = await getRegistryPages();
-
-    if (allPages.length === 0) {
-      console.log('[MemoryAnalysis] No page knowledge yet — skipping.');
-      return '';
-    }
-
+  private _selectRelevantPages(allPages: RegistryPageRecord[], userTask: string): RegistryPageRecord[] {
     const keywords = extractKeywords(userTask);
 
     // Score by relevance, fall back to recency for ties
@@ -53,17 +46,14 @@ export class MemoryAnalysisAgent {
       .map((p) => ({ p, score: scorePageRelevance(p, keywords) }))
       .sort((a, b) => b.score - a.score || b.p.lastSeen.localeCompare(a.p.lastSeen));
 
-    const entries = scored.slice(0, MAX_PAGES_IN_CONTEXT).map(({ p }) => p);
+    return scored.slice(0, MAX_PAGES_IN_CONTEXT).map(({ p }) => p);
+  }
 
-    console.log(
-      `\n[MemoryAnalysis] Consulting ${entries.length}/${allPages.length} page(s) (filtered by relevance)...`
-    );
-
+  private async _requestAnalysis(userTask: string, entries: RegistryPageRecord[]): Promise<string> {
     const knowledgeBase = entries
       .map((p) => `Path: ${p.path}\nComponents: ${p.components || 'none'}`)
       .join('\n\n---\n\n');
 
-    let analysis: string;
     try {
       const response = await this.client.chat.completions.create({
         model: await resolveModel(this.client, this.modelOverride),
@@ -73,11 +63,28 @@ export class MemoryAnalysisAgent {
           { role: 'user', content: `Task: ${userTask}\n\nKnowledge base:\n\n${knowledgeBase}` },
         ],
       });
-      analysis = response.choices[0]?.message?.content?.trim() ?? '';
+      return response.choices[0]?.message?.content?.trim() ?? '';
     } catch (err) {
       console.warn(`[MemoryAnalysis] Failed: ${(err as Error).message}`);
       return '';
     }
+  }
+
+  async analyze(userTask: string): Promise<string> {
+    const allPages = await getRegistryPages();
+
+    if (allPages.length === 0) {
+      console.log('[MemoryAnalysis] No page knowledge yet — skipping.');
+      return '';
+    }
+
+    const entries = this._selectRelevantPages(allPages, userTask);
+
+    console.log(
+      `\n[MemoryAnalysis] Consulting ${entries.length}/${allPages.length} page(s) (filtered by relevance)...`
+    );
+
+    const analysis = await this._requestAnalysis(userTask, entries);
 
     if (!analysis || analysis.includes('NO_RELEVANT_MEMORY')) {
       console.log('[MemoryAnalysis] No relevant pages for this task.');

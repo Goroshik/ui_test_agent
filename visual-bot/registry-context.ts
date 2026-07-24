@@ -178,7 +178,7 @@ export async function toolGetPageComponents(pagePath: string): Promise<string> {
     const matches = Object.keys(pages).filter((p) => p.includes(path));
     if (matches.length === 0) return `No page found for "${path}". Known pages: ${Object.keys(pages).join(', ')}`;
     // Return summary of matches instead
-    return `Exact page "${path}" not found. Did you mean:\n${matches.map((m) => `  ${m} (${pages[m].components.length} components)`).join('\n')}`;
+    return `Exact page "${path}" not found. Did you mean:\n${matches.map((m) => `  ${m} (${pages[m]?.components.length ?? 0} components)`).join('\n')}`;
   }
 
   if (page.components.length === 0) return `Page "${path}" has no registered components.`;
@@ -212,7 +212,7 @@ export async function toolSearchComponents(query: string): Promise<string> {
     // Also search page paths
     const pageMatches = Object.keys(pages).filter((p) => p.includes(q));
     if (pageMatches.length > 0) {
-      return `No components matched "${query}", but found pages:\n${pageMatches.map((p) => `  ${p} (${pages[p].components.length} components)`).join('\n')}\nTry registry_get_page_components with one of these paths.`;
+      return `No components matched "${query}", but found pages:\n${pageMatches.map((p) => `  ${p} (${pages[p]?.components.length ?? 0} components)`).join('\n')}\nTry registry_get_page_components with one of these paths.`;
     }
     return `No components or pages found matching "${query}".`;
   }

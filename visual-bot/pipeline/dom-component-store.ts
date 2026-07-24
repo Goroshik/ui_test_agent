@@ -44,8 +44,9 @@ async function save(data: Store): Promise<void> {
 
 export async function upsertComponent(doc: DomComponentDoc): Promise<void> {
   const data = await load();
-  if (!data[doc.url]) data[doc.url] = {};
-  data[doc.url][doc.blockName] = {
+  const urlBlocks = data[doc.url] ?? {};
+  data[doc.url] = urlBlocks;
+  urlBlocks[doc.blockName] = {
     blockName: doc.blockName,
     contentHash: doc.contentHash,
     description: doc.description,

@@ -1,3 +1,4 @@
+import type OpenAI from 'openai';
 import { config } from 'dotenv';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -6,6 +7,7 @@ import { readdir, rm } from 'fs/promises';
 import { existsSync } from 'fs';
 import { resolveModel } from './utils.js';
 import { createProvider } from './llm-provider.js';
+import type { LlmProvider } from './llm-provider.js';
 import { OllamaModelManager } from './ollama-model-manager.js';
 import { Agent } from './agents/main/agent.js';
 import { PipelineRunner } from './agents/pipeline/pipeline-runner.js';
@@ -15,6 +17,79 @@ import { PostRunCompareAgent } from './agents/post-run/post-run-snapshot-compare
 import { TaskVerificationAgent } from './agents/post-run/task-verification-agent.js';
 import { RunLogger, attachLogger } from './run-logger.js';
 import { connectDB, closeDB, saveRun, updateRun } from './db.js';
+
+interface VerifyParams {
+  verificationEnabled: boolean;
+  validatorModel: string | undefined;
+  client: OpenAI;
+  mm: OllamaModelManager;
+  plan: string;
+  agent: Agent;
+  attempt: number;
+  maxRetries: number;
+}
+
+interface VerifyResult {
+  taskSucceeded: boolean;
+  lastFailReason: string;
+  shouldRetry: boolean;
+}
+
+/** Runs task verification (if enabled) and decides whether the caller should retry. */
+async function verifyAndDecideRetry(params: VerifyParams): Promise<VerifyResult> {
+  const { verificationEnabled, validatorModel, client, mm, plan, agent, attempt, maxRetries } = params;
+  if (!verificationEnabled) {
+    return { taskSucceeded: true, lastFailReason: '', shouldRetry: false };
+  }
+
+  const effectiveValidatorModel = validatorModel ?? await resolveModel(client);
+  const verification = await mm.withModel(validatorModel, () => {
+    const verifier = new TaskVerificationAgent(client, effectiveValidatorModel);
+    return verifier.verify(plan, agent.getLastScreenshotPath());
+  });
+
+  if (verification.success) {
+    console.log('\n✅ Task verified as completed.');
+    return { taskSucceeded: true, lastFailReason: '', shouldRetry: false };
+  }
+
+  console.log(`\n❌ Task not completed: ${verification.reason}`);
+  return {
+    taskSucceeded: false,
+    lastFailReason: verification.reason,
+    shouldRetry: attempt <= maxRetries,
+  };
+}
+
+interface RunPipelineParams {
+  agent: Agent;
+  analyzer: LlmProvider;
+  mm: OllamaModelManager;
+  mainModel: string | undefined;
+}
+
+/** Runs the analysis pipeline on the collected session data, if enabled and a session exists. */
+async function runAnalysisPipeline(params: RunPipelineParams): Promise<void> {
+  const { agent, analyzer, mm, mainModel } = params;
+  const pipelineEnabled = process.env.PIPELINE_ENABLED !== 'false';
+  if (!pipelineEnabled) return;
+
+  const sessionDir = agent.getSessionDirectory();
+  if (!sessionDir) return;
+
+  const dataDir = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'data');
+  const pipelineModel =
+    analyzer.model || (analyzer.kind === 'ollama' ? await resolveModel(analyzer.client) : '');
+  if (!pipelineModel) throw new Error('No analyzer model configured for pipeline');
+
+  const runPipeline = () => new PipelineRunner(analyzer.client, pipelineModel).run(sessionDir, dataDir);
+
+  if (analyzer.kind === 'ollama') {
+    await mm.withModel(analyzer.model || mainModel, runPipeline);
+  } else {
+    await runPipeline();
+  }
+}
 
 async function cleanIncomingDirs(): Promise<void> {
   const screenshotsDir = resolve(process.cwd(), 'screenshots');
@@ -112,7 +187,6 @@ try {
 
   let taskSucceeded = false;
   let lastFailReason = '';
-  let lastAgent: Agent | null = null;
 
   for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
     if (attempt > 1) {
@@ -125,51 +199,22 @@ try {
 
     // 3. Main agent executes the plan
     const agent = new Agent(client, logger, mongoRunId ?? undefined, mainModel);
-    lastAgent = agent;
     currentAgent = agent;
     await mm.withModel(mainModel, () => agent.run(plan));
     currentAgent = null;
 
     // 4. Verify task completion BEFORE running heavy analysis pipeline
-    if (verificationEnabled) {
-      const effectiveValidatorModel = validatorModel ?? await resolveModel(client);
-      const verification = await mm.withModel(validatorModel, () => {
-        const verifier = new TaskVerificationAgent(client, effectiveValidatorModel);
-        return verifier.verify(plan, agent.getLastScreenshotPath());
-      });
-
-      if (!verification.success) {
-        lastFailReason = verification.reason;
-        console.log(`\n❌ Task not completed: ${verification.reason}`);
-        if (attempt <= maxRetries) {
-          continue; // skip pipeline, go straight to retry
-        }
-      } else {
-        taskSucceeded = true;
-        console.log('\n✅ Task verified as completed.');
-      }
-    } else {
-      taskSucceeded = true;
+    const verifyResult = await verifyAndDecideRetry({
+      verificationEnabled, validatorModel, client, mm, plan, agent, attempt, maxRetries,
+    });
+    taskSucceeded = verifyResult.taskSucceeded;
+    lastFailReason = verifyResult.lastFailReason;
+    if (verifyResult.shouldRetry) {
+      continue; // skip pipeline, go straight to retry
     }
 
     // 4b. Run analysis pipeline on collected session data (only if task passed or verification disabled)
-    const pipelineEnabled = process.env.PIPELINE_ENABLED !== 'false';
-    if (pipelineEnabled) {
-      const sessionDir = agent.getSessionDirectory();
-      if (sessionDir) {
-        const dataDir = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'data');
-        const pipelineModel =
-          analyzer.model || (analyzer.kind === 'ollama' ? await resolveModel(analyzer.client) : '');
-        if (!pipelineModel) throw new Error('No analyzer model configured for pipeline');
-        const runPipeline = () =>
-          new PipelineRunner(analyzer.client, pipelineModel).run(sessionDir, dataDir);
-        if (analyzer.kind === 'ollama') {
-          await mm.withModel(analyzer.model || mainModel, runPipeline);
-        } else {
-          await runPipeline();
-        }
-      }
-    }
+    await runAnalysisPipeline({ agent, analyzer, mm, mainModel });
 
     break; // exit retry loop — pipeline already ran
   }

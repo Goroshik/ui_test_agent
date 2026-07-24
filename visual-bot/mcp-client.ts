@@ -35,49 +35,70 @@ export class MCPClient {
   async connect(): Promise<MCPTool[]> {
     const cliPath = this._resolveCLI();
 
-    this.process = spawn('node', [cliPath, '--no-sandbox', '--isolated'], {
+    const proc = spawn('node', [cliPath, '--no-sandbox', '--isolated'], {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
+    this.process = proc;
+    this._registerProcessHandlers(proc);
 
-    this.process.on('error', (err: Error) => {
+    if (!proc.stdout) {
+      throw new Error('MCP process has no stdout');
+    }
+    this.rl = createInterface({ input: proc.stdout, crlfDelay: Infinity });
+    this.rl.on('line', (line: string) => {
+      this._handleIncomingLine(line);
+    });
+
+    const tools = await this._performHandshake();
+    this.tools = tools;
+    return tools;
+  }
+
+  private _registerProcessHandlers(proc: ChildProcess): void {
+    proc.on('error', (err: Error) => {
       console.error('MCP process error:', err.message);
     });
 
-    this.process.on('exit', (code: number | null) => {
+    proc.on('exit', (code: number | null) => {
       if (code !== null && code !== 0) {
         console.error(`MCP process exited with code ${code}`);
       }
     });
 
     // Log MCP stderr only in debug mode
-    this.process.stderr!.on('data', (data: Buffer) => {
-      if (process.env.DEBUG) {
-        process.stderr.write(`[MCP] ${data}`);
-      }
-    });
-
-    this.rl = createInterface({ input: this.process.stdout!, crlfDelay: Infinity });
-
-    this.rl.on('line', (line: string) => {
-      line = line.trim();
-      if (!line) return;
-      let msg: MCPMessage;
-      try {
-        msg = JSON.parse(line);
-      } catch {
-        return; // not JSON, ignore
-      }
-      if (msg.id !== undefined && this.pendingRequests.has(msg.id)) {
-        const { resolve, reject } = this.pendingRequests.get(msg.id)!;
-        this.pendingRequests.delete(msg.id);
-        if (msg.error) {
-          reject(new Error(`MCP error ${msg.error.code}: ${msg.error.message}`));
-        } else {
-          resolve(msg.result);
+    if (proc.stderr) {
+      proc.stderr.on('data', (data: Buffer) => {
+        if (process.env.DEBUG) {
+          process.stderr.write(`[MCP] ${data.toString()}`);
         }
-      }
-    });
+      });
+    }
+  }
 
+  private _handleIncomingLine(rawLine: string): void {
+    const line = rawLine.trim();
+    if (!line) return;
+
+    let msg: MCPMessage;
+    try {
+      msg = JSON.parse(line) as MCPMessage;
+    } catch {
+      return; // not JSON, ignore
+    }
+
+    if (msg.id === undefined) return;
+    const pending = this.pendingRequests.get(msg.id);
+    if (!pending) return;
+
+    this.pendingRequests.delete(msg.id);
+    if (msg.error) {
+      pending.reject(new Error(`MCP error ${msg.error.code}: ${msg.error.message}`));
+    } else {
+      pending.resolve(msg.result);
+    }
+  }
+
+  private async _performHandshake(): Promise<MCPTool[]> {
     // MCP handshake
     await this._request('initialize', {
       protocolVersion: '2024-11-05',
@@ -88,7 +109,6 @@ export class MCPClient {
     this._notify('notifications/initialized', {});
 
     const { tools } = await this._request('tools/list', {}) as { tools: MCPTool[] };
-    this.tools = tools;
     return tools;
   }
 
@@ -143,26 +163,37 @@ export class MCPClient {
     fnSource: string,
     opts: { ref?: string; element?: string } = {},
   ): Promise<T | null> {
-    const args: Record<string, unknown> = { function: fnSource };
-    if (opts.ref) args.target = opts.ref;
-    if (opts.element) args.element = opts.element;
+    const args = this._buildEvaluateArgs(fnSource, opts);
     try {
       const result = await this._request('tools/call', {
         name: 'browser_evaluate',
         arguments: args,
       }) as MCPToolResult;
       const parsed = parseEvaluateResult<T>(result);
-      if (parsed === null && process.env.DEBUG_EVAL) {
-        const raw = Array.isArray(result?.content)
-          ? result.content.map((c) => c.text ?? '').join('\n').slice(0, 500)
-          : JSON.stringify(result).slice(0, 500);
-        console.warn(`[MCP eval] parse failed. raw: ${raw}`);
-      }
+      if (parsed === null) this._logEvalParseFailure(result);
       return parsed;
     } catch (err) {
       console.warn(`[MCP eval] call failed: ${(err as Error).message}`);
       return null;
     }
+  }
+
+  private _buildEvaluateArgs(
+    fnSource: string,
+    opts: { ref?: string; element?: string },
+  ): Record<string, unknown> {
+    const args: Record<string, unknown> = { function: fnSource };
+    if (opts.ref) args.target = opts.ref;
+    if (opts.element) args.element = opts.element;
+    return args;
+  }
+
+  private _logEvalParseFailure(result: MCPToolResult): void {
+    if (!process.env.DEBUG_EVAL) return;
+    const raw = Array.isArray(result.content)
+      ? result.content.map((c) => c.text ?? '').join('\n').slice(0, 500)
+      : JSON.stringify(result).slice(0, 500);
+    console.warn(`[MCP eval] parse failed. raw: ${raw}`);
   }
 
   /** Extracts stable attributes for the element referenced by aria-ref `eN`. */
@@ -180,10 +211,23 @@ export class MCPClient {
 
   disconnect(): void {
     if (this.rl) this.rl.close();
-    if (this.process) {
-      this.process.stdin!.end();
-      setTimeout(() => this.process!.kill(), 500);
+    const proc = this.process;
+    if (!proc) return;
+    if (proc.stdin) proc.stdin.end();
+    setTimeout(() => {
+      if (this.process) this.process.kill();
+    }, 500);
+  }
+
+  /** Writes a newline-terminated JSON-RPC payload to the MCP process stdin. */
+  private _writeToProcess(payload: string): void {
+    if (!this.process) {
+      throw new Error('MCP process not started');
     }
+    if (!this.process.stdin) {
+      throw new Error('MCP process has no stdin');
+    }
+    this.process.stdin.write(payload + '\n');
   }
 
   private _request(method: string, params: unknown): Promise<unknown> {
@@ -203,13 +247,13 @@ export class MCPClient {
       });
 
       const msg = JSON.stringify({ jsonrpc: '2.0', id, method, params });
-      this.process!.stdin!.write(msg + '\n');
+      this._writeToProcess(msg);
     });
   }
 
   private _notify(method: string, params: unknown): void {
     const msg = JSON.stringify({ jsonrpc: '2.0', method, params });
-    this.process!.stdin!.write(msg + '\n');
+    this._writeToProcess(msg);
   }
 
   private _resolveCLI(): string {
@@ -231,7 +275,7 @@ export class MCPClient {
     if (typeof bin === 'string') {
       cliRel = bin;
     } else if (bin && typeof bin === 'object') {
-      cliRel = Object.values(bin)[0];
+      cliRel = Object.values(bin)[0] ?? pkg.main ?? 'cli.js';
     } else {
       cliRel = pkg.main || 'cli.js';
     }
@@ -242,44 +286,63 @@ export class MCPClient {
 
 // ─── browser_evaluate helpers ───────────────────────────────────────────────
 
-function parseEvaluateResult<T>(result: MCPToolResult): T | null {
+function extractEvaluateText(result: MCPToolResult): string | null {
   if (!result || !Array.isArray(result.content)) return null;
   const text = result.content
     .filter((c) => c.type === 'text')
     .map((c) => c.text ?? '')
     .join('\n');
-  if (!text) return null;
+  return text || null;
+}
 
-  // MCP 0.0.75 wraps eval output as:
-  //   ### Result
-  //   <json or scalar>
-  //   ### Ran Playwright code
-  //   ```js ... ```
-  // Extract the block between "### Result" and the next "###" header (or EOF).
+// MCP 0.0.75 wraps eval output as:
+//   ### Result
+//   <json or scalar>
+//   ### Ran Playwright code
+//   ```js ... ```
+// Extract the block between "### Result" and the next "###" header (or EOF).
+function extractResultCandidate(text: string): string | null {
   const resultMatch = text.match(/###\s*Result\s*\n([\s\S]*?)(?:\n###\s|$)/i);
-  const candidate = (resultMatch ? resultMatch[1] : text).trim();
-  if (!candidate) return null;
+  const captured = resultMatch?.[1];
+  const candidate = (captured ?? text).trim();
+  return candidate || null;
+}
 
-  // Strip a leading code fence if present.
-  const unfenced = candidate
+// Strip a leading/trailing code fence if present.
+function stripCodeFence(candidate: string): string {
+  return candidate
     .replace(/^```(?:json|javascript|js)?\s*\n?/i, '')
     .replace(/\n?```$/i, '')
     .trim();
+}
+
+// Some scalars come back without quotes (numbers, booleans, "undefined").
+function parseUnfencedScalar<T>(unfenced: string): T | null {
+  if (unfenced === 'undefined' || unfenced === 'null') return null;
+  if (unfenced === 'true' || unfenced === 'false') return (unfenced === 'true') as unknown as T;
+  const num = Number(unfenced);
+  if (!Number.isNaN(num) && unfenced !== '') return num as unknown as T;
+  // Bare string (no quotes) — wrap and retry.
+  try {
+    return JSON.parse(`"${unfenced.replace(/"/g, '\\"')}"`) as T;
+  } catch {
+    return null;
+  }
+}
+
+function parseEvaluateResult<T>(result: MCPToolResult): T | null {
+  const text = extractEvaluateText(result);
+  if (!text) return null;
+
+  const candidate = extractResultCandidate(text);
+  if (!candidate) return null;
+
+  const unfenced = stripCodeFence(candidate);
 
   try {
     return JSON.parse(unfenced) as T;
   } catch {
-    // Some scalars come back without quotes (numbers, booleans, "undefined").
-    if (unfenced === 'undefined' || unfenced === 'null') return null;
-    if (unfenced === 'true' || unfenced === 'false') return (unfenced === 'true') as unknown as T;
-    const num = Number(unfenced);
-    if (!Number.isNaN(num) && unfenced !== '') return num as unknown as T;
-    // Bare string (no quotes) — wrap and retry.
-    try {
-      return JSON.parse(`"${unfenced.replace(/"/g, '\\"')}"`) as T;
-    } catch {
-      return null;
-    }
+    return parseUnfencedScalar<T>(unfenced);
   }
 }
 
