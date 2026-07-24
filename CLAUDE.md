@@ -68,6 +68,17 @@ Current thresholds are documented, with rationale, in
 - Keep cyclomatic complexity ≤ 8 per function; extract helpers rather than
   nesting. Note that a function at CC 8 with no tests scores CRAP 72 — complexity
   and coverage are coupled, so complex code *must* come with tests.
+- **Keep function signatures on one line.** crap4ts credits coverage to a function
+  only at ≥ 0.8 span overlap, measuring from the declaration while coverage starts
+  at the body. A signature long relative to its body drops under the cutoff and
+  the function reports **0% coverage however well it is tested** — silently. Name
+  an inline parameter or return object type instead of inlining it across lines.
+  Several functions carry a comment saying exactly this; don't reflow them back.
+- If a function you just tested still shows 0% in `yarn crap`, that is the cutoff
+  above, not a missing test. See [docs/quality-gates.md](docs/quality-gates.md).
+- Entry points (`index.ts`, `run-pipeline.ts`, `run-adversarial.ts`) are excluded
+  from coverage, so logic placed there is invisible to the gate. `index.ts` is
+  still scored by CRAP, so keep it to wiring and put real logic in a module.
 - Max nesting depth 3, max 50 lines per function, max 4 params. Prefer an options
   object over a fifth parameter.
 - `strict` TS is on, plus `noUncheckedIndexedAccess` and
