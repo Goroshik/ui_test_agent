@@ -5,6 +5,16 @@ import { getContentSummary, upsertContentSummary } from './pipeline/content-summ
 
 export type { DiffResult as TextDiffResult };
 
+interface ChatCompletionLike {
+  choices: { message?: { content?: string | null } | null }[];
+}
+
+interface CompareContext {
+  key: string;
+  oldSnapshot: string;
+  newSnapshot: string;
+}
+
 export class VisualTextDiff {
   private readonly memory: AttentionMemory;
 
@@ -80,6 +90,22 @@ export class VisualTextDiff {
     }
   }
 
+  private extractResponseText(response: ChatCompletionLike): string {
+    return response.choices[0]?.message?.content?.trim() ?? '';
+  }
+
+  private buildSummaryComparePrompt(guidance: string): string {
+    const base =
+      'Compare two webpage state descriptions. Return strict JSON only: {"changed":boolean,"summary":string}. Be sensitive to visible label/text changes. Ignore only volatile ids/refs if visible structure is equivalent.';
+    return guidance ? `${base}\n\nPast attention rules:\n${guidance}` : base;
+  }
+
+  private buildSummaryCompareError(err: unknown): DiffResult {
+    const message = (err as Error).message ?? String(err);
+    console.warn(`  VisualTextDiff: compare summaries error: ${message}`);
+    return { changed: true, summary: `Compare unavailable: ${message}` };
+  }
+
   private async compareSummaries(
     oldSummary: string,
     newSummary: string,
@@ -91,24 +117,17 @@ export class VisualTextDiff {
         model: this.model,
         temperature: 0,
         messages: [
-          {
-            role: 'system',
-            content:
-              'Compare two webpage state descriptions. Return strict JSON only: {"changed":boolean,"summary":string}. Be sensitive to visible label/text changes. Ignore only volatile ids/refs if visible structure is equivalent.' +
-              (guidance ? `\n\nPast attention rules:\n${guidance}` : ''),
-          },
+          { role: 'system', content: this.buildSummaryComparePrompt(guidance) },
           {
             role: 'user',
             content: `Key: ${key}\n\nOld state:\n${oldSummary}\n\nNew state:\n${newSummary}`,
           },
         ],
       });
-      const text = response.choices[0]?.message?.content?.trim() ?? '';
+      const text = this.extractResponseText(response);
       return parseDiffJson(text) ?? { changed: true, summary: text || 'Non-JSON response; treated as changed.' };
     } catch (err) {
-      const message = (err as Error).message ?? String(err);
-      console.warn(`  VisualTextDiff: compare summaries error: ${message}`);
-      return { changed: true, summary: `Compare unavailable: ${message}` };
+      return this.buildSummaryCompareError(err);
     }
   }
 
