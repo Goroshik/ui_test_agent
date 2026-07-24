@@ -26,4 +26,15 @@ export default tseslint.config(
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
     },
   },
+  {
+    // describe/it blocks are declarative test structure, not algorithmic
+    // functions — max-lines-per-function penalizes a describe() wrapping many
+    // it() cases even though no individual test or assertion is complex.
+    // complexity/max-depth/max-params still apply and catch genuinely
+    // convoluted test logic.
+    files: ['**/*.test.ts'],
+    rules: {
+      'max-lines-per-function': 'off',
+    },
+  },
 );

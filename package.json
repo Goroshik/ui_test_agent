@@ -16,7 +16,8 @@
     "test:unit": "vitest run",
     "coverage": "vitest run --coverage",
     "crap": "crap4ts -c coverage/coverage-final.json",
-    "crap:changed": "crap4ts -c coverage/coverage-final.json --changed-since origin/master"
+    "crap:changed": "crap4ts -c coverage/coverage-final.json --changed-since origin/master",
+    "mutation": "stryker run"
   },
   "dependencies": {
     "@playwright/mcp": "^0.0.75",
@@ -27,6 +28,8 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@stryker-mutator/core": "^9.6.1",
+    "@stryker-mutator/vitest-runner": "^9.6.1",
     "@types/node": "^25.5.0",
     "@types/sharp": "^0.31.1",
     "@vitest/coverage-v8": "^4.1.10",
