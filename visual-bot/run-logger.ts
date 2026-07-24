@@ -14,7 +14,7 @@ export class RunLogger {
   private readonly logPath: string;
   private readonly errorPath: string;
   private initialized = false;
-  private mongoRunId?: ObjectId;
+  private mongoRunId?: ObjectId | undefined;
   private tokenUsage: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
   constructor(runId: string, mongoRunId?: ObjectId) {
@@ -88,6 +88,25 @@ export class RunLogger {
   }
 }
 
+interface LoggedChatCompletion {
+  choices?: { message?: { content?: string } }[];
+  usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+}
+
+async function recordCompletion(
+  logger: RunLogger,
+  agentName: string,
+  result: LoggedChatCompletion,
+): Promise<void> {
+  const content = result.choices?.[0]?.message?.content ?? undefined;
+  if (content) {
+    await logger.logResponse(agentName, content);
+  }
+  if (result.usage) {
+    logger.addTokenUsage(result.usage);
+  }
+}
+
 /** Monkey-patch client.chat.completions.create to log every AI response. */
 export function attachLogger(
   client: { chat: { completions: { create: (...args: unknown[]) => Promise<unknown> } } },
@@ -95,20 +114,9 @@ export function attachLogger(
   agentName: string
 ): void {
   const original = client.chat.completions.create.bind(client.chat.completions);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (client.chat.completions as any).create = async (...args: unknown[]) => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const result = await (original as any)(...args) as {
-      choices?: { message?: { content?: string } }[];
-      usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
-    };
-    const content = result?.choices?.[0]?.message?.content ?? undefined;
-    if (content) {
-      await logger.logResponse(agentName, content);
-    }
-    if (result?.usage) {
-      logger.addTokenUsage(result.usage);
-    }
+  client.chat.completions.create = async (...args: unknown[]): Promise<unknown> => {
+    const result = (await original(...args)) as LoggedChatCompletion;
+    await recordCompletion(logger, agentName, result);
     return result;
   };
 }
