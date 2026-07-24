@@ -46,14 +46,8 @@ export class FixturesGenerator {
     console.log(`[FixturesGenerator] Written ${written} fixture files to ${fixturesDir}`);
   }
 
-  private async _writeFixtures(
-    comp: ComponentRecord,
-    action: ComponentRecord['actions'][0],
-    prefix: string,
-    fixturesDir: string,
-  ): Promise<void> {
-    const net = action.network!;
-    const prompt = `Generate realistic Cypress fixture JSON files for this API action.
+  private _buildFixturePrompt(comp: ComponentRecord, action: ComponentRecord['actions'][0], net: NetworkAction): string {
+    return `Generate realistic Cypress fixture JSON files for this API action.
 
 Component: ${comp.label} (${comp.id})
 Action type: ${action.type}
@@ -71,25 +65,32 @@ Rules:
 - success: fill every field in responseShape with plausible example values
 - error: include "error", "message", and "code" fields with realistic values
 - No explanation, only the JSON object.`;
+  }
 
-    let successData: unknown;
-    let errorData: unknown;
-
+  private async _generateFixtureData(
+    comp: ComponentRecord,
+    action: ComponentRecord['actions'][0],
+    net: NetworkAction,
+  ): Promise<{ successData?: unknown; errorData?: unknown }> {
+    const prompt = this._buildFixturePrompt(comp, action, net);
     try {
       const text = await runLlm(prompt);
       const match = text.match(/\{[\s\S]*\}/);
-      if (match) {
-        const parsed = JSON.parse(match[0]) as { success?: unknown; error?: unknown };
-        successData = parsed.success;
-        errorData = parsed.error;
-      }
+      if (!match) return {};
+      const parsed = JSON.parse(match[0]) as { success?: unknown; error?: unknown };
+      return { successData: parsed.success, errorData: parsed.error };
     } catch (err) {
       console.warn(`[FixturesGenerator] Claude failed for ${comp.id}:`, (err as Error).message);
+      return {};
     }
+  }
 
-    if (!successData) successData = this._shapeToExample(net.responseShape ?? {});
-    if (!errorData) errorData = { error: 'REQUEST_FAILED', message: 'The request could not be completed', code: 500 };
-
+  private async _writeFixtureFiles(
+    fixturesDir: string,
+    prefix: string,
+    successData: unknown,
+    errorData: unknown,
+  ): Promise<void> {
     const successPath = join(fixturesDir, `${prefix}--success.json`);
     const errorPath = join(fixturesDir, `${prefix}--error.json`);
 
@@ -99,16 +100,39 @@ Rules:
     console.log(`[FixturesGenerator]  ${prefix}--error.json`);
   }
 
+  private async _writeFixtures(
+    comp: ComponentRecord,
+    action: ComponentRecord['actions'][0],
+    prefix: string,
+    fixturesDir: string,
+  ): Promise<void> {
+    const net = action.network;
+    if (!net) return;
+
+    const generated = await this._generateFixtureData(comp, action, net);
+    let successData = generated.successData;
+    let errorData = generated.errorData;
+
+    if (!successData) successData = this._shapeToExample(net.responseShape ?? {});
+    if (!errorData) errorData = { error: 'REQUEST_FAILED', message: 'The request could not be completed', code: 500 };
+
+    await this._writeFixtureFiles(fixturesDir, prefix, successData, errorData);
+  }
+
+  private _valueForType(key: string, type: unknown): unknown {
+    const t = String(type).toLowerCase();
+    if (t.includes('id')) return `${key}-123`;
+    if (t.includes('url')) return `/example/${key}`;
+    if (t.includes('number') || t.includes('int') || t.includes('float')) return 0;
+    if (t.includes('bool')) return true;
+    if (t.includes('array')) return [];
+    return `example-${key}`;
+  }
+
   private _shapeToExample(shape: Record<string, unknown>): Record<string, unknown> {
     const result: Record<string, unknown> = {};
     for (const [key, type] of Object.entries(shape)) {
-      const t = String(type).toLowerCase();
-      if (t.includes('id')) result[key] = `${key}-123`;
-      else if (t.includes('url')) result[key] = `/example/${key}`;
-      else if (t.includes('number') || t.includes('int') || t.includes('float')) result[key] = 0;
-      else if (t.includes('bool')) result[key] = true;
-      else if (t.includes('array')) result[key] = [];
-      else result[key] = `example-${key}`;
+      result[key] = this._valueForType(key, type);
     }
     return result;
   }

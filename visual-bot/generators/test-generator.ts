@@ -159,7 +159,7 @@ export class TestGenerator {
     }
 
     const meta = await this._loadMeta(sessionDir);
-    const sessionId = meta?.sessionId ?? sessionDir.split(/[\\/]/).pop() ?? 'unknown';
+    const sessionId = this._resolveSessionId(meta, sessionDir);
 
     const registry = await this._loadRegistryForSession(dataDir);
     if (!registry) return;
@@ -190,6 +190,10 @@ export class TestGenerator {
         blockers: pageBlockers,
       });
     }
+  }
+
+  private _resolveSessionId(meta: SessionMeta | null, sessionDir: string): string {
+    return meta?.sessionId ?? sessionDir.split(/[\\/]/).pop() ?? 'unknown';
   }
 
   private async _loadRegistryForSession(dataDir: string): Promise<ComponentRegistry | null> {
@@ -340,8 +344,8 @@ export class TestGenerator {
       : '';
   }
 
-  private _buildPrompt(ctx: PromptContext): string {
-    const { sessionId, pagePath, scenarioName, scenario, isLoginPage, steps, components, sections } = ctx;
+  private _buildPromptHeader(ctx: PromptContext): string {
+    const { sessionId, pagePath, scenarioName, scenario, steps, components, sections } = ctx;
     return `You are generating a Cypress test based on a recorded browser session.
 Output ONLY raw JavaScript — no markdown, no code fences, no backticks, no explanation.
 The very first character of your output must be "/" (the start of a JS comment).
@@ -364,62 +368,19 @@ ${sections.availableFixturesSection}
 SESSION STEPS (the recorded user interactions):
 ${JSON.stringify(steps, null, 2)}
 
-GENERATION RULES:
-1. Import SELECTORS as a named export: import { SELECTORS } from '../../support/selectors'
-   NEVER use default import.
-2. Use ONLY the exact SELECTORS paths from SELECTOR ACCESS MAP above.
-   NEVER use bracket notation with kebab-case IDs.
-   SELECTORS values are plain CSS strings — use them DIRECTLY: cy.get(SELECTORS.NS.KEY)
-3. Each cy.intercept() MUST go inside beforeEach(), BEFORE cy.visit()
-4. After every click/fill that triggers a network call → cy.wait('@alias')
-5. Verify state BEFORE interaction: .should('exist').and('be.visible')
-6. Verify state AFTER interaction (post_interaction assertions from registry)
-7. Storage changes (from step storageDiff) → verify via cy.window().its('localStorage')
-8. Add // STEP N: comment before each logical step
-9. describe title format: "PageName: Scenario Name"
-10. it title format: "should <action> <expected result>"
-11. File header must include session ID and step range
-12. ${isLoginPage
+`;
+  }
+
+  private _buildLoginRule(isLoginPage: boolean): string {
+    return isLoginPage
       ? 'This IS the login page — do NOT call cy.login() here'
-      : 'Call cy.login() as the FIRST line inside beforeEach(), before any cy.intercept() or cy.visit(). cy.login() takes NO arguments.'}
+      : 'Call cy.login() as the FIRST line inside beforeEach(), before any cy.intercept() or cy.visit(). cy.login() takes NO arguments.';
+  }
 
-FORBIDDEN (these are AUTO-REJECTED by the validator):
-- .fill('text')                       ← Playwright; use cy.get(...).clear().type('text')
-- await page.…                        ← Playwright; this is Cypress, no page object
-- page.locator(...) / page.getByXxx() ← Playwright; use cy.get(SELECTORS.X.Y)
-- getByTestId / getByRole / getByText ← Playwright; use SELECTORS.X.Y
-- expect(...)                         ← Jest/Playwright; use .should('...')
-- async/await in it() or beforeEach() ← Cypress chains aren't promises
-- cy.wait(1000) or any numeric wait   ← only cy.wait('@alias') or { timeout } option
-- Hardcoded selector strings          ← only SELECTORS.NAMESPACE.KEY dot notation
-- SELECTORS['kebab-case-id']          ← only dot notation
-- Hardcoded credentials               ← use Cypress.env('email') / Cypress.env('password')
-- Markdown code fences or any prose
-
-CORRECT vs WRONG (memorize):
-WRONG:  await page.getByTestId('email').fill('a@b');
-RIGHT:  cy.get(SELECTORS.LOGIN.EMAIL).clear().type('a@b');
-
-WRONG:  cy.wait(500);
-RIGHT:  cy.wait('@login');
-
-WRONG:  expect(value).toBe('x');
-RIGHT:  cy.wrap(value).should('eq', 'x');
-
-Generate it() blocks:
-1. Happy path (the recorded flow succeeds)
-2. For each edge case in TEST PLAN — generate a separate it() block.
-   - Each edge case carries "input" (the exact value to type) and "expected"
-     (what to assert). USE THEM. Type the given input, assert the expected outcome.
-   - For input-validation cases (required-empty, invalid-email, maxlength-exceeded,
-     pattern-mismatch, out-of-range, xss-injection, whitespace-only): type the
-     input, attempt submit, then assert the form was NOT submitted / an error is
-     shown (e.g. cy.url() unchanged, or an error/invalid state visible).
-   - For network-error / network-status: cy.intercept the real method+url from the
-     description with that statusCode, click, cy.wait('@alias'), assert graceful error.
-   If no edge cases listed: add one network-error case if there are network actions.
-
-CRITICAL: Your response must start directly with // and contain only valid JavaScript.`;
+  private _buildPrompt(ctx: PromptContext): string {
+    const header = this._buildPromptHeader(ctx);
+    const loginRule = this._buildLoginRule(ctx.isLoginPage);
+    return `${header}${PROMPT_GENERATION_RULES_HEAD}${loginRule}${PROMPT_STATIC_TAIL}`;
   }
 
   private async _resolveFileContent(params: FileContentParams): Promise<string> {
