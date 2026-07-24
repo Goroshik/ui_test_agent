@@ -67,6 +67,49 @@ export class AttentionMemory {
     await this._save(capped);
   }
 
+  private _buildSummarizeUserContent(
+    key: string,
+    summary: string,
+    oldSample?: string,
+    newSample?: string,
+  ): string {
+    const oldSection = oldSample ? `Old sample:\n${oldSample.slice(0, 1800)}\n` : '';
+    const newSection = newSample ? `New sample:\n${newSample.slice(0, 1800)}\n` : '';
+    return `Type: ${this.kind}\nKey: ${key}\nDetected summary: ${summary}\n` + oldSection + newSection;
+  }
+
+  private _extractRuleFromResponseText(text: string): string {
+    const payload = this._parseJson(text);
+    return typeof payload?.rule === 'string' ? payload.rule.trim() : '';
+  }
+
+  private async _requestRule(
+    key: string,
+    summary: string,
+    oldSample?: string,
+    newSample?: string,
+  ): Promise<string> {
+    const response = await this.client.chat.completions.create({
+      model: this.model,
+      temperature: 0,
+      messages: [
+        {
+          role: 'system',
+          content:
+            'You create concise QA attention rules for future UI diffs. Return strict JSON only: {"rule":"..."}.' +
+            ' Rule must be one short actionable sentence, generic, and focus on visible labels/text/structure changes.',
+        },
+        {
+          role: 'user',
+          content: this._buildSummarizeUserContent(key, summary, oldSample, newSample),
+        },
+      ],
+    });
+
+    const text = response.choices[0]?.message?.content?.trim() ?? '';
+    return this._extractRuleFromResponseText(text);
+  }
+
   private async _summarizeRule(
     key: string,
     summary: string,
@@ -74,29 +117,7 @@ export class AttentionMemory {
     newSample?: string,
   ): Promise<string> {
     try {
-      const response = await this.client.chat.completions.create({
-        model: this.model,
-        temperature: 0,
-        messages: [
-          {
-            role: 'system',
-            content:
-              'You create concise QA attention rules for future UI diffs. Return strict JSON only: {"rule":"..."}.' +
-              ' Rule must be one short actionable sentence, generic, and focus on visible labels/text/structure changes.',
-          },
-          {
-            role: 'user',
-            content:
-              `Type: ${this.kind}\nKey: ${key}\nDetected summary: ${summary}\n` +
-              (oldSample ? `Old sample:\n${oldSample.slice(0, 1800)}\n` : '') +
-              (newSample ? `New sample:\n${newSample.slice(0, 1800)}\n` : ''),
-          },
-        ],
-      });
-
-      const text = response.choices[0]?.message?.content?.trim() ?? '';
-      const payload = this._parseJson(text);
-      const rule = typeof payload?.rule === 'string' ? payload.rule.trim() : '';
+      const rule = await this._requestRule(key, summary, oldSample, newSample);
       return rule || this._fallbackRule(summary);
     } catch {
       return this._fallbackRule(summary);
@@ -124,7 +145,7 @@ export class AttentionMemory {
     try {
       const parsed = JSON.parse(await readFile(FILE_PATH, 'utf-8')) as unknown;
       if (!Array.isArray(parsed)) return [];
-      return parsed.filter(this._isEntry);
+      return parsed.filter((entry: unknown) => this._isEntry(entry));
     } catch {
       return [];
     }

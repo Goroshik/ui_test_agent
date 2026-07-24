@@ -17,10 +17,8 @@ export class DomAnalyzerAgent {
 
   async analyze(sessionDir: string, stepMeta: Array<{ stepId: string; url: string }>): Promise<void> {
     const domDir = join(sessionDir, 'raw', 'dom');
-    let files: string[];
-    try {
-      files = await readdir(domDir);
-    } catch {
+    const files = await this._readDomDir(domDir);
+    if (files === null) {
       console.log('[DomAnalyzer] No dom directory, skipping');
       return;
     }
@@ -34,39 +32,60 @@ export class DomAnalyzerAgent {
     }
 
     const urlByStepId = Object.fromEntries(stepMeta.map((s) => [s.stepId, s.url]));
-    const components: DomComponent[] = [];
-
-    for (const file of jsonFiles) {
-      const stepId = file.replace('-dom.json', '');
-      const pageUrl = urlByStepId[stepId] ?? '';
-      let dump: DomElementDump[];
-      try {
-        dump = JSON.parse(await readFile(join(domDir, file), 'utf-8')) as DomElementDump[];
-      } catch {
-        continue;
-      }
-      if (!Array.isArray(dump)) continue;
-
-      for (const el of dump) {
-        components.push({
-          tagName: el.tag,
-          testid: el.testid,
-          cssSelector: el.preferredSelector || null,
-          id: el.id,
-          name: el.name,
-          type: el.type,
-          text: el.text,
-          ariaLabel: el.ariaLabel,
-          selectorKind: el.selectorKind,
-          constraints: el.constraints ?? null,
-          pageUrl,
-          stepId,
-        });
-      }
-    }
+    const components = await this._collectComponents(domDir, jsonFiles, urlByStepId);
 
     const outPath = join(sessionDir, 'analyzed', 'dom-components.json');
     await writeFile(outPath, JSON.stringify(components, null, 2), 'utf-8');
     console.log(`[DomAnalyzer] ${components.length} components → ${outPath}`);
+  }
+
+  private async _readDomDir(domDir: string): Promise<string[] | null> {
+    try {
+      return await readdir(domDir);
+    } catch {
+      return null;
+    }
+  }
+
+  private async _collectComponents(
+    domDir: string,
+    jsonFiles: string[],
+    urlByStepId: Record<string, string>,
+  ): Promise<DomComponent[]> {
+    const components: DomComponent[] = [];
+    for (const file of jsonFiles) {
+      const stepId = file.replace('-dom.json', '');
+      const pageUrl = urlByStepId[stepId] ?? '';
+      const dump = await this._loadDomDump(domDir, file);
+      if (dump === null) continue;
+      components.push(...this._mapDumpToComponents(dump, pageUrl, stepId));
+    }
+    return components;
+  }
+
+  private async _loadDomDump(domDir: string, file: string): Promise<DomElementDump[] | null> {
+    try {
+      const dump = JSON.parse(await readFile(join(domDir, file), 'utf-8')) as DomElementDump[];
+      return Array.isArray(dump) ? dump : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private _mapDumpToComponents(dump: DomElementDump[], pageUrl: string, stepId: string): DomComponent[] {
+    return dump.map((el) => ({
+      tagName: el.tag,
+      testid: el.testid,
+      cssSelector: el.preferredSelector || null,
+      id: el.id,
+      name: el.name,
+      type: el.type,
+      text: el.text,
+      ariaLabel: el.ariaLabel,
+      selectorKind: el.selectorKind,
+      constraints: el.constraints ?? null,
+      pageUrl,
+      stepId,
+    }));
   }
 }

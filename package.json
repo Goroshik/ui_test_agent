@@ -10,7 +10,11 @@
     "test": "tsx visual-bot/generators/test-planner.ts && tsx visual-bot/generators/selectors-generator.ts && tsx visual-bot/generators/fixtures-generator.ts && tsx visual-bot/generators/test-generator.ts && tsx visual-bot/validators/test-validator.ts",
     "test:validate": "tsx visual-bot/validators/test-validator.ts",
     "test:ui": "yarn --cwd cypress-tests test:ui",
-    "build": "tsc"
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint visual-bot",
+    "test:unit": "vitest run",
+    "coverage": "vitest run --coverage"
   },
   "dependencies": {
     "@playwright/mcp": "^0.0.75",
@@ -20,9 +24,14 @@
     "sharp": "^0.34.5"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/node": "^25.5.0",
     "@types/sharp": "^0.31.1",
+    "@vitest/coverage-v8": "^4.1.10",
+    "eslint": "^10.7.0",
     "tsx": "^4.21.0",
-    "typescript": "^6.0.2"
+    "typescript": "^6.0.2",
+    "typescript-eslint": "^8.65.0",
+    "vitest": "^4.1.10"
   }
 }

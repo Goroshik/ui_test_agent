@@ -75,50 +75,7 @@ export class NeedsTestIdReportAgent {
   private _classify(c: ComponentRecord): ClassifiedComponent {
     const interacted = c.actions.length > 0;
     const userAction = c.actions[0]?.type ?? null;
-
-    const sel = c.selectors;
-    const testid = sel.testid;
-    const css = sel.css;
-    const preferred = sel.preferred || '';
-
-    let quality: ClassifiedComponent['selectorQuality'] = 'none';
-    let classification: ClassifiedComponent['classification'] = 'low-priority';
-    let blocking = false;
-    let currentBestSelector = '';
-
-    if (testid && testid !== 'null') {
-      quality = 'stable';
-      classification = 'ready';
-      currentBestSelector = testid;
-    } else if (css && /^\[data-(testid|cy|qa|test)=/.test(css)) {
-      quality = 'stable';
-      classification = 'ready';
-      currentBestSelector = css;
-    } else if (css && /^#[a-z][\w-]*$/i.test(css)) {
-      quality = 'stable';
-      classification = 'ready';
-      currentBestSelector = css;
-    } else if (css) {
-      quality = 'text-based';
-      classification = interacted ? 'needs-attention' : 'low-priority';
-      blocking = interacted;
-      currentBestSelector = css;
-    } else if (preferred && /^\[data-(testid|cy|qa)=/.test(preferred)) {
-      quality = 'stable';
-      classification = 'ready';
-      currentBestSelector = preferred;
-    } else if (preferred) {
-      // ARIA-style locator (e.g. `link[name="..."]`) — text-based, fragile in Cypress
-      quality = 'text-based';
-      classification = interacted ? 'needs-attention' : 'low-priority';
-      blocking = interacted;
-      currentBestSelector = preferred;
-    } else {
-      quality = 'none';
-      classification = interacted ? 'needs-attention' : 'low-priority';
-      blocking = interacted;
-      currentBestSelector = '(none)';
-    }
+    const selectorInfo = this._determineSelector(c.selectors, interacted);
 
     return {
       componentId: c.id,
@@ -128,12 +85,56 @@ export class NeedsTestIdReportAgent {
       label: c.label,
       interactedByUser: interacted,
       userAction,
-      currentBestSelector,
-      selectorQuality: quality,
-      classification,
-      blocking,
+      currentBestSelector: selectorInfo.currentBestSelector,
+      selectorQuality: selectorInfo.quality,
+      classification: selectorInfo.classification,
+      blocking: selectorInfo.blocking,
       suggestion: null,
     };
+  }
+
+  private _determineSelector(
+    sel: ComponentRecord['selectors'],
+    interacted: boolean,
+  ): {
+    quality: ClassifiedComponent['selectorQuality'];
+    classification: ClassifiedComponent['classification'];
+    blocking: boolean;
+    currentBestSelector: string;
+  } {
+    const testid = sel.testid;
+    const css = sel.css;
+    const preferred = sel.preferred || '';
+
+    const stableSelector = this._findStableSelector(testid, css, preferred);
+    if (stableSelector) {
+      return { quality: 'stable', classification: 'ready', blocking: false, currentBestSelector: stableSelector };
+    }
+
+    // ARIA-style locator (e.g. `link[name="..."]`) — text-based, fragile in Cypress
+    const fallbackSelector = css || preferred;
+    return {
+      quality: fallbackSelector ? 'text-based' : 'none',
+      classification: interacted ? 'needs-attention' : 'low-priority',
+      blocking: interacted,
+      currentBestSelector: fallbackSelector || '(none)',
+    };
+  }
+
+  private _findStableSelector(
+    testid: string | null,
+    css: string | null,
+    preferred: string,
+  ): string | null {
+    if (testid && testid !== 'null') return testid;
+    if (css) {
+      if (/^\[data-(testid|cy|qa|test)=/.test(css)) return css;
+      if (/^#[a-z][\w-]*$/i.test(css)) return css;
+      // css present but not a stable pattern — falls through to text-based handling
+      return null;
+    }
+    if (preferred && /^\[data-(testid|cy|qa)=/.test(preferred)) return preferred;
+    return null;
   }
 
   // ─── LLM: suggest test-id names ──────────────────────────────────────────────

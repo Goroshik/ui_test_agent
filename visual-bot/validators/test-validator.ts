@@ -45,6 +45,42 @@ const FORBIDDEN_PATTERNS: Array<[string, RegExp, string]> = [
   ['no-hardcoded-credentials', /(['"])(?:[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})\1/, 'Hardcoded email — use Cypress.env(\'email\')'],
 ];
 
+// State tracked while scanning a beforeEach() block for the
+// "intercept-before-visit" rule below.
+interface BeforeEachState {
+  inBeforeEach: boolean;
+  depth: number;
+  seenVisit: boolean;
+  beforeEachDepth: number;
+}
+
+function countBraceDelta(line: string): number {
+  const opens = (line.match(/\{/g) ?? []).length;
+  const closes = (line.match(/\}/g) ?? []).length;
+  return opens - closes;
+}
+
+/** Updates `state` for one line and reports whether this line is a violation. */
+function scanInterceptBeforeVisitLine(line: string, state: BeforeEachState): boolean {
+  if (/beforeEach\s*\(/.test(line)) {
+    state.inBeforeEach = true;
+    state.seenVisit = false;
+    state.beforeEachDepth = state.depth;
+  }
+
+  state.depth += countBraceDelta(line);
+
+  if (state.inBeforeEach && state.depth <= state.beforeEachDepth) {
+    state.inBeforeEach = false;
+    state.seenVisit = false;
+  }
+
+  if (!state.inBeforeEach) return false;
+
+  if (/cy\.visit\s*\(/.test(line)) state.seenVisit = true;
+  return state.seenVisit && /cy\.intercept\s*\(/.test(line);
+}
+
 const RULES: Rule[] = [
   {
     // Rule 0: forbidden cross-framework / API patterns
@@ -53,6 +89,7 @@ const RULES: Rule[] = [
       const violations: ValidationViolation[] = [];
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
+        if (line === undefined) continue;
         // skip pure comment lines
         if (/^\s*\/\//.test(line)) continue;
         for (const [name, re, msg] of FORBIDDEN_PATTERNS) {
@@ -77,9 +114,10 @@ const RULES: Rule[] = [
     check(lines, file) {
       const violations: ValidationViolation[] = [];
       // Match cy.get('...') or cy.get("...") or cy.get(`...`) where value starts with . # [ or a tag
-      const re = /cy\.get\(\s*['"`]([.#\[a-z][^'"`]*?)['"`]\s*\)/gi;
+      const re = /cy\.get\(\s*['"`]([.#[a-z][^'"`]*?)['"`]\s*\)/gi;
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
+        if (line === undefined) continue;
         let m: RegExpExecArray | null;
         re.lastIndex = 0;
         while ((m = re.exec(line)) !== null) {
@@ -102,14 +140,16 @@ const RULES: Rule[] = [
       const violations: ValidationViolation[] = [];
       const re = /cy\.wait\(\s*\d+\s*\)/g;
       for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (line === undefined) continue;
         re.lastIndex = 0;
-        if (re.test(lines[i])) {
+        if (re.test(line)) {
           violations.push({
             file,
             line: i + 1,
             rule: 'no-numeric-wait',
             message: 'cy.wait(number) is forbidden — use cy.wait(\'@alias\') instead',
-            snippet: lines[i].trim(),
+            snippet: line.trim(),
           });
         }
       }
@@ -121,40 +161,25 @@ const RULES: Rule[] = [
     name: 'intercept-before-visit',
     check(lines, file) {
       const violations: ValidationViolation[] = [];
-      let inBeforeEach = false;
-      let depth = 0;
-      let seenVisit = false;
-      let beforeEachDepth = 0;
+      const state: BeforeEachState = {
+        inBeforeEach: false,
+        depth: 0,
+        seenVisit: false,
+        beforeEachDepth: 0,
+      };
 
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
+        if (line === undefined) continue;
 
-        if (/beforeEach\s*\(/.test(line)) {
-          inBeforeEach = true;
-          seenVisit = false;
-          beforeEachDepth = depth;
-        }
-
-        const opens = (line.match(/\{/g) ?? []).length;
-        const closes = (line.match(/\}/g) ?? []).length;
-        depth += opens - closes;
-
-        if (inBeforeEach && depth <= beforeEachDepth) {
-          inBeforeEach = false;
-          seenVisit = false;
-        }
-
-        if (inBeforeEach) {
-          if (/cy\.visit\s*\(/.test(line)) seenVisit = true;
-          if (seenVisit && /cy\.intercept\s*\(/.test(line)) {
-            violations.push({
-              file,
-              line: i + 1,
-              rule: 'intercept-before-visit',
-              message: 'cy.intercept() must be placed before cy.visit() in beforeEach',
-              snippet: line.trim(),
-            });
-          }
+        if (scanInterceptBeforeVisitLine(line, state)) {
+          violations.push({
+            file,
+            line: i + 1,
+            rule: 'intercept-before-visit',
+            message: 'cy.intercept() must be placed before cy.visit() in beforeEach',
+            snippet: line.trim(),
+          });
         }
       }
       return violations;
