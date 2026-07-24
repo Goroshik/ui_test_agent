@@ -274,7 +274,7 @@ function fromNetwork(component: ComponentRecord): TestEdgeCase[] {
   return out;
 }
 
-function dedupe(cases: TestEdgeCase[]): TestEdgeCase[] {
+export function dedupe(cases: TestEdgeCase[]): TestEdgeCase[] {
   const seen = new Set<string>();
   const out: TestEdgeCase[] = [];
   for (const c of cases) {

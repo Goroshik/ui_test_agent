@@ -36,6 +36,16 @@ function pick<T>(a: T | null | undefined, b: T | null | undefined): T | null | u
   return a ?? b;
 }
 
+export type ConfidenceLevel = 'high' | 'medium' | 'low';
+
+const CONFIDENCE_RANK: Record<ConfidenceLevel, number> = { high: 2, medium: 1, low: 0 };
+
+/** Combines two confidence levels, keeping the stronger one. */
+export function resolveConfidence(a: ConfidenceLevel, b: ConfidenceLevel): ConfidenceLevel {
+  const max = Math.max(CONFIDENCE_RANK[a], CONFIDENCE_RANK[b]);
+  return max === 2 ? 'high' : max === 1 ? 'medium' : 'low';
+}
+
 function elField<K extends keyof ActionElement>(
   el: ActionElement | undefined, key: K,
 ): ActionElement[K] | undefined {
@@ -343,7 +353,7 @@ export class IdentityResolutionAgent {
 
     const ariaResult = this._matchAria(anchor, stepAria);
     const domResult = this._matchDom(anchor, stepDom);
-    const confidence = this._resolveConfidence(ariaResult.confidence, domResult.confidence);
+    const confidence = resolveConfidence(ariaResult.confidence, domResult.confidence);
 
     const resolved = await this._resolveViaLlmIfAmbiguous(
       anchor,
@@ -352,15 +362,6 @@ export class IdentityResolutionAgent {
     );
 
     return { aria: resolved.aria, dom: resolved.dom, network: stepNetwork, confidence };
-  }
-
-  private _resolveConfidence(
-    a: 'high' | 'medium' | 'low',
-    b: 'high' | 'medium' | 'low',
-  ): 'high' | 'medium' | 'low' {
-    const rank = { high: 2, medium: 1, low: 0 };
-    const max = Math.max(rank[a], rank[b]);
-    return max === 2 ? 'high' : max === 1 ? 'medium' : 'low';
   }
 
   private _buildLlmResolvePrompt(
@@ -597,7 +598,7 @@ Return JSON (only, no explanation):
           ...new Set([...existing.assertions.post_interaction, ...newRec.assertions.post_interaction]),
         ],
       },
-      confidence: this._upgradeConfidence(existing.confidence, newRec.confidence),
+      confidence: resolveConfidence(existing.confidence, newRec.confidence),
       seenCount: existing.seenCount + 1,
       lastSeen: new Date().toISOString(),
     };
@@ -612,15 +613,6 @@ Return JSON (only, no explanation):
       if (!dupe) result.push(action);
     }
     return result;
-  }
-
-  private _upgradeConfidence(
-    a: 'high' | 'medium' | 'low',
-    b: 'high' | 'medium' | 'low',
-  ): 'high' | 'medium' | 'low' {
-    const rank = { high: 2, medium: 1, low: 0 };
-    const max = Math.max(rank[a], rank[b]);
-    return max === 2 ? 'high' : max === 1 ? 'medium' : 'low';
   }
 
   // ─── Registry I/O ─────────────────────────────────────────────────────────────
