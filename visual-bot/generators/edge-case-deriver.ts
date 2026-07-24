@@ -278,7 +278,7 @@ function dedupe(cases: TestEdgeCase[]): TestEdgeCase[] {
   const seen = new Set<string>();
   const out: TestEdgeCase[] = [];
   for (const c of cases) {
-    const key = `${c.type}|${c.component}|${c.input ?? ''}`;
+    const key = `${c.type}|${c.component}|${c.input ?? ''}|${c.description}`;
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(c);

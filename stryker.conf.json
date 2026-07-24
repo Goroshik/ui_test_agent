@@ -1,0 +1,23 @@
+{
+  "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "packageManager": "yarn",
+  "testRunner": "vitest",
+  "coverageAnalysis": "perTest",
+  "incremental": true,
+  "incrementalFile": "reports/stryker-incremental.json",
+  "mutate": [
+    "visual-bot/generators/edge-case-deriver.ts"
+  ],
+  "reporters": ["html", "clear-text", "progress", "json"],
+  "htmlReporter": {
+    "fileName": "reports/mutation/index.html"
+  },
+  "jsonReporter": {
+    "fileName": "reports/mutation/mutation.json"
+  },
+  "thresholds": {
+    "high": 80,
+    "low": 65,
+    "break": 65
+  }
+}
