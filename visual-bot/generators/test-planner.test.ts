@@ -3,7 +3,12 @@ import { mkdir, mkdtemp, rm, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { TestPlanner } from './test-planner.js';
-import type { ActionElement, StepRecord } from '../pipeline/types.js';
+import type {
+  ActionElement,
+  ComponentRecord,
+  ComponentRegistry,
+  StepRecord,
+} from '../pipeline/types.js';
 
 const tempDirs: string[] = [];
 
@@ -169,5 +174,181 @@ describe('TestPlanner._loadObservations', () => {
     await writeFile(join(analyzed, 'adversarial-observations.json'), '{"a":1}', 'utf-8');
 
     await expect(load(dir, 'session-1')).resolves.toEqual([]);
+  });
+});
+
+describe('TestPlanner._buildDeterministicPlan', () => {
+  function record(overrides: Partial<ComponentRecord> = {}): ComponentRecord {
+    return {
+      id: 'cmp-1',
+      label: 'Submit',
+      componentType: 'button',
+      pages: ['/login'],
+      lastSeen: '2026-01-01T00:00:00.000Z',
+      selectors: { preferred: '#s', aria: '', testid: null, css: null, xpath: null },
+      actions: [],
+      states: {},
+      assertions: { pre_interaction: [], post_interaction: [] },
+      constraints: null,
+      confidence: 'high',
+      seenCount: 1,
+      manualOverride: false,
+      notes: '',
+      ...overrides,
+    };
+  }
+
+  function registry(...components: ComponentRecord[]): ComponentRegistry {
+    return {
+      version: '1.0',
+      lastUpdated: '2026-01-01T00:00:00.000Z',
+      components: Object.fromEntries(components.map((c) => [c.id, c])),
+    };
+  }
+
+  interface Session {
+    sessionId: string;
+    task: string;
+    steps: StepRecord[];
+  }
+
+  function session(steps: StepRecord[], sessionId = 'sess-1'): Session {
+    return { sessionId, task: 'log in', steps };
+  }
+
+  const networkAction = {
+    type: 'click' as const,
+    network: { method: 'POST', urlPattern: '/api/login', expectedStatus: 200 },
+  };
+
+  function build(
+    reg: ComponentRegistry,
+    sessions: Session[],
+    goal?: string,
+    blocking: string[] = [],
+  ): ReturnType<TestPlanner['_buildDeterministicPlan']> {
+    const planner = new TestPlanner();
+    planner['blockingIds'] = new Set(blocking);
+    return planner['_buildDeterministicPlan'](reg, sessions, goal);
+  }
+
+  it('produces one scenario per page in the session', () => {
+    const plan = build(registry(record()), [
+      session([
+        step({ stepId: 'step-001', url: 'https://app.test/login' }),
+        step({ stepId: 'step-002', url: 'https://app.test/home' }),
+      ]),
+    ]);
+
+    expect(plan.scenarios.map((s) => s.page).sort()).toEqual(['/home', '/login']);
+  });
+
+  it('lists the session ids it planned from', () => {
+    const plan = build(registry(record()), [session([step()], 'sess-a')]);
+    expect(plan.sessions).toEqual(['sess-a']);
+  });
+
+  it('includes the goal only when one is supplied', () => {
+    expect(build(registry(record()), [session([step()])], 'log in successfully').goal).toBe(
+      'log in successfully',
+    );
+    expect(build(registry(record()), [session([step()])])).not.toHaveProperty('goal');
+  });
+
+  it('derives the scenario id and spec path from the page and scenario name', () => {
+    const plan = build(registry(record()), [
+      session([step({ url: 'https://app.test/login', action: { type: 'click', description: 'Sign In' } })]),
+    ]);
+    const scenario = plan.scenarios[0];
+
+    expect(scenario?.id).toBe('login-sign-in');
+    expect(scenario?.file).toBe('cypress/e2e/login/sign-in.cy.js');
+  });
+
+  it('names the root page "home"', () => {
+    const plan = build(registry(record({ pages: ['/'] })), [
+      session([step({ url: 'https://app.test/' })]),
+    ]);
+    expect(plan.scenarios[0]?.file).toContain('cypress/e2e/home/');
+  });
+
+  it('collects the step ids belonging to the page', () => {
+    const plan = build(registry(record()), [
+      session([
+        step({ stepId: 'step-001', url: 'https://app.test/login' }),
+        step({ stepId: 'step-002', url: 'https://app.test/login' }),
+      ]),
+    ]);
+    expect(plan.scenarios[0]?.stepIds).toEqual(['step-001', 'step-002']);
+  });
+
+  it('raises the priority to high when a component performs a network call', () => {
+    const plan = build(registry(record({ actions: [networkAction] })), [session([step()])]);
+    expect(plan.scenarios[0]?.priority).toBe('high');
+  });
+
+  it('keeps the priority medium without any network action', () => {
+    const plan = build(registry(record()), [session([step()])]);
+    expect(plan.scenarios[0]?.priority).toBe('medium');
+  });
+
+  it('names a success and an error fixture per network component', () => {
+    const plan = build(registry(record({ id: 'login-btn', actions: [networkAction] })), [
+      session([step()]),
+    ]);
+    expect(plan.scenarios[0]?.fixtureFiles).toEqual([
+      'login-btn--success.json',
+      'login-btn--error.json',
+    ]);
+  });
+
+  it('lists no fixtures when nothing hits the network', () => {
+    const plan = build(registry(record()), [session([step()])]);
+    expect(plan.scenarios[0]?.fixtureFiles).toEqual([]);
+  });
+
+  it('includes a component that appears on more than two pages', () => {
+    const global = record({ id: 'nav', pages: ['/a', '/b', '/c'] });
+    const plan = build(registry(global), [session([step({ url: 'https://app.test/login' })])]);
+
+    expect(plan.scenarios[0]?.componentIds).toContain('nav');
+  });
+
+  it('excludes a component belonging to another page only', () => {
+    const other = record({ id: 'elsewhere', pages: ['/other'] });
+    const plan = build(registry(other), [session([step({ url: 'https://app.test/login' })])]);
+
+    expect(plan.scenarios[0]?.componentIds).toEqual([]);
+  });
+
+  it('excludes blocking components from the scenario', () => {
+    const plan = build(
+      registry(record({ id: 'blocked' }), record({ id: 'ok' })),
+      [session([step()])],
+      undefined,
+      ['blocked'],
+    );
+
+    expect(plan.scenarios[0]?.componentIds).toEqual(['ok']);
+  });
+
+  it('plans across several sessions', () => {
+    const plan = build(registry(record()), [
+      session([step({ url: 'https://app.test/login' })], 'sess-a'),
+      session([step({ url: 'https://app.test/home' })], 'sess-b'),
+    ]);
+
+    expect(plan.scenarios).toHaveLength(2);
+    expect(plan.sessions).toEqual(['sess-a', 'sess-b']);
+  });
+
+  it('produces an empty scenario list for a session with no steps', () => {
+    const plan = build(registry(record()), [session([])]);
+    expect(plan.scenarios).toEqual([]);
+  });
+
+  it('attaches a description naming the page', () => {
+    const plan = build(registry(record()), [session([step({ url: 'https://app.test/login' })])]);
+    expect(plan.scenarios[0]?.description).toBe('Recorded flow on /login');
   });
 });
