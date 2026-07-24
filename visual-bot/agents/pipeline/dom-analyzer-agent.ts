@@ -12,7 +12,6 @@ import type { DomComponent, DomElementDump } from '../../pipeline/types.js';
  */
 export class DomAnalyzerAgent {
   // Kept for parity with other agents; not used in deterministic mode.
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   constructor(_client: OpenAI, _model: string) {}
 
   async analyze(sessionDir: string, stepMeta: Array<{ stepId: string; url: string }>): Promise<void> {
