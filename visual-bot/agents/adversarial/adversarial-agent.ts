@@ -200,7 +200,7 @@ export class AdversarialAgent {
       // Find the last "=> [NNN]" style status in the network log.
       const matches = [...text.matchAll(/=>\s*\[?(\d{3})\]?/g)];
       const last = matches[matches.length - 1];
-      return last ? parseInt(last[1], 10) : null;
+      return last?.[1] ? parseInt(last[1], 10) : null;
     } catch {
       return null;
     }

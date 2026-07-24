@@ -139,6 +139,11 @@ function buildActionData(toolName: string, toolArgs: Record<string, unknown>): A
   const url = typeof toolArgs.url === 'string' ? toolArgs.url : undefined;
   const values = Array.isArray(toolArgs.values) ? (toolArgs.values as string[]).join(', ') : undefined;
 
+  const element = elementName || ref
+    ? { ariaName: elementName ?? null, ref: ref ?? null }
+    : undefined;
+  const value = text ?? url ?? values;
+
   return {
     type,
     description: elementName
@@ -146,20 +151,15 @@ function buildActionData(toolName: string, toolArgs: Record<string, unknown>): A
       : url
         ? `navigate to ${url}`
         : `${type}`,
-    element: elementName || ref
-      ? {
-          ariaName: elementName ?? null,
-          ref: ref ?? null,
-        }
-      : undefined,
-    value: text ?? url ?? values,
+    ...(element ? { element } : {}),
+    ...(value !== undefined ? { value } : {}),
   };
 }
 
 export class Agent {
   private client: OpenAI;
-  private logger?: RunLogger;
-  private mongoRunId?: ObjectId;
+  private logger?: RunLogger | undefined;
+  private mongoRunId?: ObjectId | undefined;
   private model: string | null = null;
   private mcp: MCPClient;
   private screenshotter: Screenshotter;
@@ -276,7 +276,11 @@ export class Agent {
         temperature: 0.2,
       });
 
-      const message = response.choices[0].message;
+      const choice = response.choices[0];
+      if (!choice) {
+        throw new Error('OpenAI response contained no choices.');
+      }
+      const message = choice.message;
       messages.push(message);
 
       if (message.content) {
@@ -480,10 +484,12 @@ export class Agent {
       if (!line.includes(`[ref=${ref}]`) && !line.includes(`ref="${ref}"`)) continue;
       // Pattern: "  - button "Submit" [ref=e12]"
       const withName = line.match(/-\s+([a-z][\w-]*)\s+"([^"]+)"/i);
-      if (withName) return { ariaRole: withName[1].toLowerCase(), ariaName: withName[2] };
+      if (withName?.[1] && withName[2] !== undefined) {
+        return { ariaRole: withName[1].toLowerCase(), ariaName: withName[2] };
+      }
       // Pattern: "  - button [ref=e12]" (no accessible name)
       const noName = line.match(/-\s+([a-z][\w-]*)\s+\[/i);
-      if (noName) return { ariaRole: noName[1].toLowerCase(), ariaName: null };
+      if (noName?.[1]) return { ariaRole: noName[1].toLowerCase(), ariaName: null };
     }
     return { ariaRole: null, ariaName: null };
   }
