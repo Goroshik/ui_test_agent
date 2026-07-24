@@ -146,3 +146,110 @@ describe('MCPClient._resolveCLI', () => {
     expect(/^([a-zA-Z]:[\\/]|\/)/.test(cliPath)).toBe(true);
   });
 });
+
+describe('MCPClient._handleIncomingLine', () => {
+  interface Captured {
+    resolved: unknown[];
+    rejected: Error[];
+  }
+
+  /** Registers a pending request under `id` and returns what it settles with. */
+  function withPending(id: number): { client: MCPClient; captured: Captured } {
+    const client = new MCPClient();
+    const captured: Captured = { resolved: [], rejected: [] };
+    client['pendingRequests'].set(id, {
+      resolve: (value) => captured.resolved.push(value),
+      reject: (reason) => captured.rejected.push(reason),
+    });
+    return { client, captured };
+  }
+
+  const feed = (client: MCPClient, line: string): void => client['_handleIncomingLine'](line);
+
+  it('resolves the matching pending request with the result', () => {
+    const { client, captured } = withPending(7);
+    feed(client, JSON.stringify({ id: 7, result: { ok: true } }));
+
+    expect(captured.resolved).toEqual([{ ok: true }]);
+    expect(captured.rejected).toEqual([]);
+  });
+
+  it('removes the request from the pending map once settled', () => {
+    const { client } = withPending(7);
+    feed(client, JSON.stringify({ id: 7, result: 1 }));
+
+    expect(client['pendingRequests'].has(7)).toBe(false);
+  });
+
+  it('rejects with the code and message when the message carries an error', () => {
+    const { client, captured } = withPending(7);
+    feed(client, JSON.stringify({ id: 7, error: { code: -32601, message: 'Method not found' } }));
+
+    expect(captured.resolved).toEqual([]);
+    expect(captured.rejected[0]?.message).toBe('MCP error -32601: Method not found');
+  });
+
+  it('trims surrounding whitespace before parsing', () => {
+    const { client, captured } = withPending(7);
+    feed(client, `   ${JSON.stringify({ id: 7, result: 'ok' })}   `);
+
+    expect(captured.resolved).toEqual(['ok']);
+  });
+
+  it('ignores a blank line', () => {
+    const { client, captured } = withPending(7);
+    feed(client, '   ');
+
+    expect(captured.resolved).toEqual([]);
+    expect(client['pendingRequests'].has(7)).toBe(true);
+  });
+
+  it('ignores a non-JSON line', () => {
+    const { client, captured } = withPending(7);
+    feed(client, 'MCP server listening on stdio');
+
+    expect(captured.resolved).toEqual([]);
+    expect(client['pendingRequests'].has(7)).toBe(true);
+  });
+
+  it('ignores a notification with no id', () => {
+    const { client, captured } = withPending(7);
+    feed(client, JSON.stringify({ method: 'notifications/message', params: {} }));
+
+    expect(captured.resolved).toEqual([]);
+    expect(client['pendingRequests'].has(7)).toBe(true);
+  });
+
+  it('ignores a response whose id matches no pending request', () => {
+    const { client, captured } = withPending(7);
+    feed(client, JSON.stringify({ id: 99, result: 'stray' }));
+
+    expect(captured.resolved).toEqual([]);
+    expect(client['pendingRequests'].has(7)).toBe(true);
+  });
+
+  it('resolves an undefined result rather than treating it as an error', () => {
+    const { client, captured } = withPending(7);
+    feed(client, JSON.stringify({ id: 7 }));
+
+    expect(captured.resolved).toEqual([undefined]);
+    expect(captured.rejected).toEqual([]);
+  });
+
+  it('settles only the addressed request when several are pending', () => {
+    const client = new MCPClient();
+    const hits: number[] = [];
+    for (const id of [1, 2, 3]) {
+      client['pendingRequests'].set(id, {
+        resolve: () => hits.push(id),
+        reject: () => hits.push(-id),
+      });
+    }
+
+    feed(client, JSON.stringify({ id: 2, result: 'ok' }));
+
+    expect(hits).toEqual([2]);
+    expect(client['pendingRequests'].has(1)).toBe(true);
+    expect(client['pendingRequests'].has(3)).toBe(true);
+  });
+});
