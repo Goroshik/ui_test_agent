@@ -38,6 +38,15 @@ function getDB(): Db {
   return _db;
 }
 
+/** Shallow-copies a Mongo document and strips the given fields (e.g. `_id`, the lookup key). */
+function omitFields(doc: Record<string, unknown>, fields: string[]): Record<string, unknown> {
+  const rest: Record<string, unknown> = { ...doc };
+  for (const field of fields) {
+    delete rest[field];
+  }
+  return rest;
+}
+
 // ─── Runs ────────────────────────────────────────────────────────────────────
 
 export interface RunData {
@@ -200,8 +209,8 @@ export async function dbGetAllPageKnowledge(): Promise<Record<string, Omit<PageK
     const docs = await getDB().collection('page_knowledge').find().toArray();
     const result: Record<string, Omit<PageKnowledgeDoc, 'url'>> = {};
     for (const doc of docs) {
-      const { url, _id, ...rest } = doc;
-      result[url as string] = rest as Omit<PageKnowledgeDoc, 'url'>;
+      const url = doc.url as string;
+      result[url] = omitFields(doc, ['url', '_id']) as Omit<PageKnowledgeDoc, 'url'>;
     }
     return result;
   } catch (err) {
@@ -239,8 +248,8 @@ export async function dbGetAllDomPages(): Promise<Record<string, Omit<DomPageDoc
     const docs = await getDB().collection('dom_memory').find().toArray();
     const result: Record<string, Omit<DomPageDoc, 'url'>> = {};
     for (const doc of docs) {
-      const { url, _id, ...rest } = doc;
-      result[url as string] = rest as Omit<DomPageDoc, 'url'>;
+      const url = doc.url as string;
+      result[url] = omitFields(doc, ['url', '_id']) as Omit<DomPageDoc, 'url'>;
     }
     return result;
   } catch (err) {
@@ -253,8 +262,7 @@ export async function dbGetDomPageByUrl(url: string): Promise<Omit<DomPageDoc, '
   try {
     const doc = await getDB().collection('dom_memory').findOne({ url });
     if (!doc) return null;
-    const { url: _url, _id, ...rest } = doc;
-    return rest as Omit<DomPageDoc, 'url'>;
+    return omitFields(doc, ['url', '_id']) as Omit<DomPageDoc, 'url'>;
   } catch {
     return null;
   }
@@ -424,7 +432,7 @@ export async function getRunHistory(limit = 10): Promise<unknown[]> {
 
   return runs.map((run) => ({
     ...run,
-    steps: steps.filter((s) => s.runId.toString() === run._id.toString()),
+    steps: steps.filter((s) => (s.runId as ObjectId).toString() === run._id.toString()),
   }));
 }
 

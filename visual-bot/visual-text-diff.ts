@@ -133,6 +133,90 @@ export class VisualTextDiff {
 
   // ─── Full-content approach (fallback, no DB) ─────────────────────────────────
 
+  private buildFullComparePrompt(guidance: string): string {
+    const base =
+      'Compare two accessibility snapshots. Return strict JSON only: {"changed":boolean,"summary":string}. Be sensitive to visible label/text changes (e.g. "Company policies" -> "Policies"). Ignore only volatile ids/refs if the visible structure is equivalent.';
+    return guidance ? `${base}\n\nPast attention rules:\n${guidance}` : base;
+  }
+
+  private async requestFullCompareText(
+    oldSnapshot: string,
+    newSnapshot: string,
+    guidance: string,
+  ): Promise<string> {
+    const response = await this.client.chat.completions.create({
+      model: this.model,
+      temperature: 0,
+      messages: [
+        { role: 'system', content: this.buildFullComparePrompt(guidance) },
+        {
+          role: 'user',
+          content: `Old snapshot:\n${oldSnapshot}\n\nNew snapshot:\n${newSnapshot}`,
+        },
+      ],
+    });
+    return this.extractResponseText(response);
+  }
+
+  private buildLlmUnavailableResult(deterministicChanged: boolean, err: unknown): DiffResult {
+    const status = (err as { status?: number }).status;
+    const message = (err as Error).message ?? String(err);
+    console.warn(`  VisualTextDiff: API error (${status ?? 'unknown'}): ${message}`);
+    if (deterministicChanged) {
+      return {
+        changed: true,
+        summary: 'Deterministic snapshot diff detected content changes (LLM unavailable).',
+      };
+    }
+    return {
+      changed: false,
+      summary: 'No deterministic snapshot differences detected (LLM unavailable).',
+    };
+  }
+
+  private async resolveNonJsonFullCompare(
+    text: string,
+    deterministicChanged: boolean,
+    ctx: CompareContext,
+  ): Promise<DiffResult> {
+    const result = deterministicChanged
+      ? {
+          changed: true,
+          summary:
+            text || 'Model returned non-JSON; deterministic snapshot diff detected changes.',
+        }
+      : {
+          changed: false,
+          summary: 'Model returned non-JSON; deterministic snapshot diff found no changes.',
+        };
+    if (result.changed) {
+      await this.memory.rememberChange(ctx.key, result.summary, ctx.oldSnapshot, ctx.newSnapshot);
+    }
+    return result;
+  }
+
+  private async resolveParsedFullCompare(
+    parsed: DiffResult,
+    deterministicChanged: boolean,
+    ctx: CompareContext,
+  ): Promise<DiffResult> {
+    if (!parsed.changed && deterministicChanged) {
+      const result: DiffResult = {
+        changed: true,
+        summary:
+          parsed.summary || 'Deterministic snapshot diff detected text/structure changes.',
+      };
+      await this.memory.rememberChange(ctx.key, result.summary, ctx.oldSnapshot, ctx.newSnapshot);
+      return result;
+    }
+
+    if (parsed.changed) {
+      await this.memory.rememberChange(ctx.key, parsed.summary, ctx.oldSnapshot, ctx.newSnapshot);
+    }
+
+    return parsed;
+  }
+
   private async compareFull(
     oldSnapshot: string,
     newSnapshot: string,
@@ -140,75 +224,21 @@ export class VisualTextDiff {
     deterministicChanged: boolean,
   ): Promise<DiffResult> {
     const guidance = await this.memory.getGuidance();
+    const ctx: CompareContext = { key, oldSnapshot, newSnapshot };
 
-    let text = '';
+    let text: string;
     try {
-      const response = await this.client.chat.completions.create({
-        model: this.model,
-        temperature: 0,
-        messages: [
-          {
-            role: 'system',
-            content:
-              'Compare two accessibility snapshots. Return strict JSON only: {"changed":boolean,"summary":string}. Be sensitive to visible label/text changes (e.g. "Company policies" -> "Policies"). Ignore only volatile ids/refs if the visible structure is equivalent.' +
-              (guidance ? `\n\nPast attention rules:\n${guidance}` : ''),
-          },
-          {
-            role: 'user',
-            content: `Old snapshot:\n${oldSnapshot}\n\nNew snapshot:\n${newSnapshot}`,
-          },
-        ],
-      });
-      text = response.choices[0]?.message?.content?.trim() ?? '';
+      text = await this.requestFullCompareText(oldSnapshot, newSnapshot, guidance);
     } catch (err) {
-      const status = (err as { status?: number }).status;
-      const message = (err as Error).message ?? String(err);
-      console.warn(`  VisualTextDiff: API error (${status ?? 'unknown'}): ${message}`);
-      if (deterministicChanged) {
-        return {
-          changed: true,
-          summary: 'Deterministic snapshot diff detected content changes (LLM unavailable).',
-        };
-      }
-      return {
-        changed: false,
-        summary: 'No deterministic snapshot differences detected (LLM unavailable).',
-      };
+      return this.buildLlmUnavailableResult(deterministicChanged, err);
     }
 
     const parsed = parseDiffJson(text);
     if (!parsed) {
-      const result = deterministicChanged
-        ? {
-            changed: true,
-            summary:
-              text || 'Model returned non-JSON; deterministic snapshot diff detected changes.',
-          }
-        : {
-            changed: false,
-            summary: 'Model returned non-JSON; deterministic snapshot diff found no changes.',
-          };
-      if (result.changed) {
-        await this.memory.rememberChange(key, result.summary, oldSnapshot, newSnapshot);
-      }
-      return result;
+      return this.resolveNonJsonFullCompare(text, deterministicChanged, ctx);
     }
 
-    if (!parsed.changed && deterministicChanged) {
-      const result: DiffResult = {
-        changed: true,
-        summary:
-          parsed.summary || 'Deterministic snapshot diff detected text/structure changes.',
-      };
-      await this.memory.rememberChange(key, result.summary, oldSnapshot, newSnapshot);
-      return result;
-    }
-
-    if (parsed.changed) {
-      await this.memory.rememberChange(key, parsed.summary, oldSnapshot, newSnapshot);
-    }
-
-    return parsed;
+    return this.resolveParsedFullCompare(parsed, deterministicChanged, ctx);
   }
 
   private hasDeterministicChange(oldSnapshot: string, newSnapshot: string): boolean {
