@@ -65,6 +65,34 @@ interface MatchResult {
   confidence: 'high' | 'medium' | 'low';
 }
 
+// The next four types exist so the methods using them fit their signature on one
+// line: crap4ts credits coverage to a function only at >=0.8 span overlap, and a
+// signature long relative to the body drops below that, silently reporting 0%
+// coverage however well the function is tested.
+interface MatchCandidates {
+  stepAria: AriaComponent[];
+  stepDom: DomComponent[];
+}
+
+interface DeterministicMatch {
+  aria: AriaComponent | null;
+  dom: DomComponent | null;
+  confidence: ConfidenceLevel;
+}
+
+interface ResolvedMatch {
+  aria: AriaComponent | null;
+  dom: DomComponent | null;
+}
+
+interface PreferredSelectorParts {
+  testidSel: string | null;
+  domCss: string | null;
+  domKind: string | null;
+  aria: string;
+  ref: string | null | undefined;
+}
+
 /**
  * Identity Resolution Agent (Step 5).
  *
@@ -326,11 +354,7 @@ export class IdentityResolutionAgent {
     return { match: null, confidence: 'low' };
   }
 
-  private async _resolveViaLlmIfAmbiguous(
-    anchor: AnchorEntry,
-    candidates: { stepAria: AriaComponent[]; stepDom: DomComponent[] },
-    deterministic: { aria: AriaComponent | null; dom: DomComponent | null; confidence: 'high' | 'medium' | 'low' },
-  ): Promise<{ aria: AriaComponent | null; dom: DomComponent | null }> {
+  private async _resolveViaLlmIfAmbiguous(anchor: AnchorEntry, candidates: MatchCandidates, deterministic: DeterministicMatch): Promise<ResolvedMatch> {
     const { stepAria, stepDom } = candidates;
     if (deterministic.confidence !== 'low' || (stepAria.length === 0 && stepDom.length === 0)) {
       return { aria: deterministic.aria, dom: deterministic.dom };
@@ -489,13 +513,7 @@ Return JSON (only, no explanation):
   }
 
   // Priority: testid > stable CSS from live evaluate > aria-style locator > any CSS > fallback
-  private _resolvePreferredSelector(parts: {
-    testidSel: string | null;
-    domCss: string | null;
-    domKind: string | null;
-    aria: string;
-    ref: string | null | undefined;
-  }): string {
+  private _resolvePreferredSelector(parts: PreferredSelectorParts): string {
     if (parts.testidSel) return parts.testidSel;
     const reliableCss = this._reliableDomCss(parts.domCss, parts.domKind);
     if (reliableCss) return reliableCss;
