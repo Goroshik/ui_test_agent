@@ -1,4 +1,5 @@
 import type {
+  ComponentAction,
   ComponentRecord,
   ValidationConstraints,
 } from '../pipeline/types.js';
@@ -53,123 +54,136 @@ function isTextLike(c: ValidationConstraints): boolean {
   return ['text', 'email', 'tel', 'url', 'password', 'search', 'number', ''].includes(t);
 }
 
+function requiredCase(id: string, label: string, c: ValidationConstraints): TestEdgeCase[] {
+  if (!c.required) return [];
+  return [{
+    type: 'required-empty',
+    component: id,
+    action: 'fill',
+    input: '',
+    expected: 'validation error — field is required, form not submitted',
+    description: `${label} is required → submit empty must be rejected`,
+    source: 'dom-constraint',
+  }];
+}
+
+function maxLengthCase(id: string, label: string, c: ValidationConstraints): TestEdgeCase[] {
+  if (typeof c.maxLength !== 'number' || c.maxLength <= 0) return [];
+  return [{
+    type: 'maxlength-exceeded',
+    component: id,
+    action: 'fill',
+    input: 'a'.repeat(c.maxLength + 1),
+    expected: `input truncated to ${c.maxLength} chars or rejected`,
+    description: `${label} maxlength=${c.maxLength} → ${c.maxLength + 1} chars`,
+    source: 'dom-constraint',
+  }];
+}
+
+function minLengthCase(id: string, label: string, c: ValidationConstraints): TestEdgeCase[] {
+  if (typeof c.minLength !== 'number' || c.minLength <= 1) return [];
+  return [{
+    type: 'minlength-short',
+    component: id,
+    action: 'fill',
+    input: 'a'.repeat(c.minLength - 1),
+    expected: 'validation error — too short',
+    description: `${label} minlength=${c.minLength} → ${c.minLength - 1} chars`,
+    source: 'dom-constraint',
+  }];
+}
+
+function emailCases(id: string, label: string, type: string): TestEdgeCase[] {
+  if (type !== 'email') return [];
+  return ['plainaddress', 'missing@tld', '@no-local.com', 'spaces in@x.com'].map((bad): TestEdgeCase => ({
+    type: 'invalid-email',
+    component: id,
+    action: 'fill',
+    input: bad,
+    expected: 'validation error — invalid email',
+    description: `${label} rejects invalid email "${bad}"`,
+    source: 'dom-constraint',
+  }));
+}
+
+function urlCase(id: string, label: string, type: string): TestEdgeCase[] {
+  if (type !== 'url') return [];
+  return [{
+    type: 'invalid-url',
+    component: id,
+    action: 'fill',
+    input: 'not a url',
+    expected: 'validation error — invalid URL',
+    description: `${label} rejects malformed URL`,
+    source: 'dom-constraint',
+  }];
+}
+
+function numberCases(id: string, label: string, c: ValidationConstraints, type: string): TestEdgeCase[] {
+  if (type !== 'number') return [];
+  const out: TestEdgeCase[] = [];
+  if (c.min !== null) {
+    out.push({
+      type: 'out-of-range',
+      component: id,
+      action: 'fill',
+      input: String(Number(c.min) - 1),
+      expected: `value below min ${c.min} rejected`,
+      description: `${label} min=${c.min} → ${Number(c.min) - 1}`,
+      source: 'dom-constraint',
+    });
+  }
+  if (c.max !== null) {
+    out.push({
+      type: 'out-of-range',
+      component: id,
+      action: 'fill',
+      input: String(Number(c.max) + 1),
+      expected: `value above max ${c.max} rejected`,
+      description: `${label} max=${c.max} → ${Number(c.max) + 1}`,
+      source: 'dom-constraint',
+    });
+  }
+  out.push({
+    type: 'wrong-type',
+    component: id,
+    action: 'fill',
+    input: 'abc',
+    expected: 'non-numeric input rejected or ignored',
+    description: `${label} is numeric → reject letters`,
+    source: 'dom-constraint',
+  });
+  return out;
+}
+
+function patternCase(id: string, label: string, c: ValidationConstraints): TestEdgeCase[] {
+  if (!c.pattern) return [];
+  return [{
+    type: 'pattern-mismatch',
+    component: id,
+    action: 'fill',
+    input: '!!!invalid!!!',
+    expected: `value not matching /${c.pattern}/ rejected`,
+    description: `${label} pattern=${c.pattern} → mismatching value`,
+    source: 'dom-constraint',
+  }];
+}
+
 function fromConstraints(
   id: string,
   label: string,
   c: ValidationConstraints,
 ): TestEdgeCase[] {
-  const out: TestEdgeCase[] = [];
   const type = (c.inputType ?? 'text').toLowerCase();
-
-  if (c.required) {
-    out.push({
-      type: 'required-empty',
-      component: id,
-      action: 'fill',
-      input: '',
-      expected: 'validation error — field is required, form not submitted',
-      description: `${label} is required → submit empty must be rejected`,
-      source: 'dom-constraint',
-    });
-  }
-
-  if (typeof c.maxLength === 'number' && c.maxLength > 0) {
-    out.push({
-      type: 'maxlength-exceeded',
-      component: id,
-      action: 'fill',
-      input: 'a'.repeat(c.maxLength + 1),
-      expected: `input truncated to ${c.maxLength} chars or rejected`,
-      description: `${label} maxlength=${c.maxLength} → ${c.maxLength + 1} chars`,
-      source: 'dom-constraint',
-    });
-  }
-
-  if (typeof c.minLength === 'number' && c.minLength > 1) {
-    out.push({
-      type: 'minlength-short',
-      component: id,
-      action: 'fill',
-      input: 'a'.repeat(c.minLength - 1),
-      expected: 'validation error — too short',
-      description: `${label} minlength=${c.minLength} → ${c.minLength - 1} chars`,
-      source: 'dom-constraint',
-    });
-  }
-
-  if (type === 'email') {
-    for (const bad of ['plainaddress', 'missing@tld', '@no-local.com', 'spaces in@x.com']) {
-      out.push({
-        type: 'invalid-email',
-        component: id,
-        action: 'fill',
-        input: bad,
-        expected: 'validation error — invalid email',
-        description: `${label} rejects invalid email "${bad}"`,
-        source: 'dom-constraint',
-      });
-    }
-  }
-
-  if (type === 'url') {
-    out.push({
-      type: 'invalid-url',
-      component: id,
-      action: 'fill',
-      input: 'not a url',
-      expected: 'validation error — invalid URL',
-      description: `${label} rejects malformed URL`,
-      source: 'dom-constraint',
-    });
-  }
-
-  if (type === 'number') {
-    if (c.min !== null) {
-      out.push({
-        type: 'out-of-range',
-        component: id,
-        action: 'fill',
-        input: String(Number(c.min) - 1),
-        expected: `value below min ${c.min} rejected`,
-        description: `${label} min=${c.min} → ${Number(c.min) - 1}`,
-        source: 'dom-constraint',
-      });
-    }
-    if (c.max !== null) {
-      out.push({
-        type: 'out-of-range',
-        component: id,
-        action: 'fill',
-        input: String(Number(c.max) + 1),
-        expected: `value above max ${c.max} rejected`,
-        description: `${label} max=${c.max} → ${Number(c.max) + 1}`,
-        source: 'dom-constraint',
-      });
-    }
-    out.push({
-      type: 'wrong-type',
-      component: id,
-      action: 'fill',
-      input: 'abc',
-      expected: 'non-numeric input rejected or ignored',
-      description: `${label} is numeric → reject letters`,
-      source: 'dom-constraint',
-    });
-  }
-
-  if (c.pattern) {
-    out.push({
-      type: 'pattern-mismatch',
-      component: id,
-      action: 'fill',
-      input: '!!!invalid!!!',
-      expected: `value not matching /${c.pattern}/ rejected`,
-      description: `${label} pattern=${c.pattern} → mismatching value`,
-      source: 'dom-constraint',
-    });
-  }
-
-  return out;
+  return [
+    ...requiredCase(id, label, c),
+    ...maxLengthCase(id, label, c),
+    ...minLengthCase(id, label, c),
+    ...emailCases(id, label, type),
+    ...urlCase(id, label, type),
+    ...numberCases(id, label, c, type),
+    ...patternCase(id, label, c),
+  ];
 }
 
 function staticCatalog(
@@ -206,6 +220,46 @@ function staticCatalog(
   return out;
 }
 
+function deriveNetworkCasesForAction(
+  id: string,
+  action: ComponentAction,
+  net: NonNullable<ComponentAction['network']>,
+  seenStatuses: Set<number>,
+): TestEdgeCase[] {
+  const cases: TestEdgeCase[] = [];
+
+  // Always cover a 500 for the observed call (real method + url).
+  if (!seenStatuses.has(500)) {
+    seenStatuses.add(500);
+    cases.push({
+      type: 'network-error',
+      component: id,
+      action: action.type,
+      expected: 'error message shown, UI recoverable, no crash',
+      description: `${net.method} ${net.urlPattern} → 500`,
+      source: 'network-observed',
+    });
+  }
+
+  // For auth/mutating calls, also cover the real-world 401/422.
+  if (/POST|PUT|PATCH|DELETE/i.test(net.method)) {
+    for (const status of [401, 422]) {
+      if (seenStatuses.has(status)) continue;
+      seenStatuses.add(status);
+      cases.push({
+        type: 'network-status',
+        component: id,
+        action: action.type,
+        expected: `app handles ${status} gracefully`,
+        description: `${net.method} ${net.urlPattern} → ${status}`,
+        source: 'network-observed',
+      });
+    }
+  }
+
+  return cases;
+}
+
 function fromNetwork(component: ComponentRecord): TestEdgeCase[] {
   const out: TestEdgeCase[] = [];
   const id = component.id;
@@ -214,35 +268,7 @@ function fromNetwork(component: ComponentRecord): TestEdgeCase[] {
   for (const action of component.actions) {
     const net = action.network;
     if (!net) continue;
-
-    // Always cover a 500 for the observed call (real method + url).
-    if (!seenStatuses.has(500)) {
-      seenStatuses.add(500);
-      out.push({
-        type: 'network-error',
-        component: id,
-        action: action.type,
-        expected: 'error message shown, UI recoverable, no crash',
-        description: `${net.method} ${net.urlPattern} → 500`,
-        source: 'network-observed',
-      });
-    }
-
-    // For auth/mutating calls, also cover the real-world 401/422.
-    if (/POST|PUT|PATCH|DELETE/i.test(net.method)) {
-      for (const status of [401, 422]) {
-        if (seenStatuses.has(status)) continue;
-        seenStatuses.add(status);
-        out.push({
-          type: 'network-status',
-          component: id,
-          action: action.type,
-          expected: `app handles ${status} gracefully`,
-          description: `${net.method} ${net.urlPattern} → ${status}`,
-          source: 'network-observed',
-        });
-      }
-    }
+    out.push(...deriveNetworkCasesForAction(id, action, net, seenStatuses));
   }
 
   return out;
