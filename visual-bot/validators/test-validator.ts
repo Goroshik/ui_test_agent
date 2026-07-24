@@ -255,10 +255,13 @@ export class TestValidator {
     const violations: ValidationViolation[] = [];
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
+      if (line === undefined) continue;
       let m: RegExpExecArray | null;
       re.lastIndex = 0;
       while ((m = re.exec(line)) !== null) {
-        const name = m[1].replace(/^\.?\//, '');
+        const rawName = m[1];
+        if (rawName === undefined) continue;
+        const name = rawName.replace(/^\.?\//, '');
         const withExt = name.endsWith('.json') ? name : `${name}.json`;
         if (!this.knownFixtures.has(withExt)) {
           violations.push({
