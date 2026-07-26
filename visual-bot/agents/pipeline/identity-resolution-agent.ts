@@ -47,6 +47,35 @@ export function resolveConfidence(a: ConfidenceLevel, b: ConfidenceLevel): Confi
   return max === 2 ? 'high' : max === 1 ? 'medium' : 'low';
 }
 
+export interface LlmResolution {
+  ariaIndex: number | null;
+  domIndex: number | null;
+  confidence: ConfidenceLevel;
+}
+
+const NO_LLM_RESOLUTION: LlmResolution = { ariaIndex: null, domIndex: null, confidence: 'low' };
+
+/** A usable list index, or null — guards against a negative, fractional or non-numeric answer. */
+export function parseIndex(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) return null;
+  return value;
+}
+
+function toConfidence(value: unknown): ConfidenceLevel {
+  const text = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  return text === 'high' || text === 'medium' ? text : 'low';
+}
+
+/**
+ * Strongest of the two reported confidences, capped at "medium": an LLM match is
+ * worth more than nothing but never as much as a deterministic testid/role hit,
+ * which is what "high" means everywhere else in the registry.
+ */
+export function parseLlmConfidence(aria: unknown, dom: unknown): ConfidenceLevel {
+  const best = resolveConfidence(toConfidence(aria), toConfidence(dom));
+  return best === 'high' ? 'medium' : best;
+}
+
 function elField<K extends keyof ActionElement>(
   el: ActionElement | undefined, key: K,
 ): ActionElement[K] | undefined {
@@ -84,6 +113,12 @@ interface DeterministicMatch {
 interface ResolvedMatch {
   aria: AriaComponent | null;
   dom: DomComponent | null;
+  confidence: ConfidenceLevel;
+}
+
+/** The deterministic match, unchanged — what we return when the LLM adds nothing. */
+function asResolved(deterministic: DeterministicMatch): ResolvedMatch {
+  return { aria: deterministic.aria, dom: deterministic.dom, confidence: deterministic.confidence };
 }
 
 interface PreferredSelectorParts {
@@ -351,15 +386,30 @@ export class IdentityResolutionAgent {
     return { match: null, confidence: 'low' };
   }
 
+  /** Only worth a call when deterministic matching failed and there is something to choose from. */
+  private _shouldAskLlm(candidates: MatchCandidates, deterministic: DeterministicMatch): boolean {
+    const hasCandidates = candidates.stepAria.length > 0 || candidates.stepDom.length > 0;
+    return deterministic.confidence === 'low' && hasCandidates;
+  }
+
+  private _applyLlmResolution(candidates: MatchCandidates, deterministic: DeterministicMatch, llm: LlmResolution): ResolvedMatch {
+    const llmAria = llm.ariaIndex !== null ? candidates.stepAria[llm.ariaIndex] : undefined;
+    const llmDom = llm.domIndex !== null ? candidates.stepDom[llm.domIndex] : undefined;
+    if (!llmAria && !llmDom) return asResolved(deterministic);
+
+    // The LLM found what deterministic matching could not, so its confidence is
+    // what the record deserves — previously this was parsed and thrown away.
+    return {
+      aria: llmAria ?? deterministic.aria,
+      dom: llmDom ?? deterministic.dom,
+      confidence: resolveConfidence(deterministic.confidence, llm.confidence),
+    };
+  }
+
   private async _resolveViaLlmIfAmbiguous(anchor: AnchorEntry, candidates: MatchCandidates, deterministic: DeterministicMatch): Promise<ResolvedMatch> {
-    const { stepAria, stepDom } = candidates;
-    if (deterministic.confidence !== 'low' || (stepAria.length === 0 && stepDom.length === 0)) {
-      return { aria: deterministic.aria, dom: deterministic.dom };
-    }
-    const llmResult = await this._llmResolve(anchor, stepAria, stepDom);
-    const llmAria = llmResult.ariaIndex !== null ? stepAria[llmResult.ariaIndex] : undefined;
-    const llmDom = llmResult.domIndex !== null ? stepDom[llmResult.domIndex] : undefined;
-    return { aria: llmAria ?? deterministic.aria, dom: llmDom ?? deterministic.dom };
+    if (!this._shouldAskLlm(candidates, deterministic)) return asResolved(deterministic);
+    const llm = await this._llmResolve(anchor, candidates.stepAria, candidates.stepDom);
+    return this._applyLlmResolution(candidates, deterministic, llm);
   }
 
   private async _matchAnchor(
@@ -382,7 +432,7 @@ export class IdentityResolutionAgent {
       { aria: ariaResult.match, dom: domResult.match, confidence },
     );
 
-    return { aria: resolved.aria, dom: resolved.dom, network: stepNetwork, confidence };
+    return { aria: resolved.aria, dom: resolved.dom, network: stepNetwork, confidence: resolved.confidence };
   }
 
   private _buildLlmResolvePrompt(
@@ -403,30 +453,31 @@ ${JSON.stringify(domList, null, 2)}
 
 Find which ARIA candidate and which DOM candidate describe the same element as the anchor.
 Rules:
-- If not sure, set confidence to "low"
+- Indexes are 0-based positions in the lists above
 - If no match found, use null for that index
 - Do not guess — null is better than wrong
+- confidence "high" means the candidate is unmistakably the anchor; "low" means a guess
 
 Return JSON (only, no explanation):
 {
   "ariaMatch": { "index": 0, "confidence": "high|medium|low" },
-  "domMatch": { "index": 2, "confidence": "high|medium|low" },
-  "reasoning": "brief reason"
+  "domMatch": { "index": 2, "confidence": "high|medium|low" }
 }`;
   }
 
-  private _parseLlmResolveResponse(text: string): { ariaIndex: number | null; domIndex: number | null } {
+  private _parseLlmResolveResponse(text: string): LlmResolution {
     const match = text.match(/\{[\s\S]*\}/);
-    if (!match) return { ariaIndex: null, domIndex: null };
+    if (!match) return NO_LLM_RESOLUTION;
 
     const parsed = JSON.parse(match[0]) as {
-      ariaMatch?: { index: number; confidence: string };
-      domMatch?: { index: number; confidence: string };
+      ariaMatch?: { index?: unknown; confidence?: unknown };
+      domMatch?: { index?: unknown; confidence?: unknown };
     };
 
     return {
-      ariaIndex: parsed.ariaMatch?.index ?? null,
-      domIndex: parsed.domMatch?.index ?? null,
+      ariaIndex: parseIndex(parsed.ariaMatch?.index),
+      domIndex: parseIndex(parsed.domMatch?.index),
+      confidence: parseLlmConfidence(parsed.ariaMatch?.confidence, parsed.domMatch?.confidence),
     };
   }
 
@@ -434,9 +485,9 @@ Return JSON (only, no explanation):
     anchor: AnchorEntry,
     ariaList: AriaComponent[],
     domList: DomComponent[],
-  ): Promise<{ ariaIndex: number | null; domIndex: number | null }> {
+  ): Promise<LlmResolution> {
     if (ariaList.length === 0 && domList.length === 0) {
-      return { ariaIndex: null, domIndex: null };
+      return NO_LLM_RESOLUTION;
     }
 
     try {
@@ -448,7 +499,7 @@ Return JSON (only, no explanation):
       const text = response.choices[0]?.message?.content ?? '';
       return this._parseLlmResolveResponse(text);
     } catch {
-      return { ariaIndex: null, domIndex: null };
+      return NO_LLM_RESOLUTION;
     }
   }
 

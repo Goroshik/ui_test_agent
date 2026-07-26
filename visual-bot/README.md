@@ -222,7 +222,11 @@ npx tsx visual-bot/run-pipeline.ts [sessionId]
 visual-bot/
 ├── index.ts                  — точка входа, оркестратор
 ├── run-pipeline.ts           — standalone запуск анализа для сохранённой сессии
+├── run.ts                    — CLI: crawl / analyze / generate / all
+├── steps.ts                  — что запускать на каждом шаге (чистый модуль)
 ├── llm-provider.ts           — выбор провайдера и модели по роли (OpenRouter / Ollama)
+├── tool-catalog.ts           — единый источник: имена тулов, схемы и описания для промптов
+├── url-path.ts               — нормализация путей (:id вместо идентификаторов записей)
 ├── ollama-model-manager.ts   — управление локальной моделью в Ollama (load/unload)
 ├── visual-diff.ts            — сравнение скриншотов через LLM
 ├── visual-text-diff.ts       — сравнение ARIA-снапшотов через LLM

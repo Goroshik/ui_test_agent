@@ -5,6 +5,7 @@ import { MCPClient } from '../../mcp-client.js';
 import { Screenshotter } from '../../screenshotter.js';
 import { resolveModel } from '../../utils.js';
 import { createProvider } from '../../llm-provider.js';
+import { toolSchema, REGISTRY_TOOLS } from '../../tool-catalog.js';
 import { recordVisit, getVisitSummary } from '../../memory.js';
 import { getPageSummary, getComponentContextForUrl, toolGetPageComponents, toolSearchComponents } from '../../registry-context.js';
 import { RunLogger } from '../../run-logger.js';
@@ -13,48 +14,6 @@ import { saveStep } from '../../db.js';
 import { SessionCollector } from '../../pipeline/session-collector.js';
 import type { ActionData, ActionElement, ActionType } from '../../pipeline/types.js';
 
-// Playwright MCP doesn't expose inputSchema via protocol — define them manually
-const TOOL_SCHEMAS: Record<string, OpenAI.FunctionParameters> = {
-  browser_navigate:      { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] },
-  browser_snapshot:      { type: 'object', properties: {} },
-  browser_click:         { type: 'object', properties: { element: { type: 'string' }, ref: { type: 'string' } }, required: ['element', 'ref'] },
-  browser_type:          { type: 'object', properties: { element: { type: 'string' }, ref: { type: 'string' }, text: { type: 'string' }, submit: { type: 'boolean' }, slowly: { type: 'boolean' } }, required: ['element', 'ref', 'text'] },
-  browser_select_option: { type: 'object', properties: { element: { type: 'string' }, ref: { type: 'string' }, values: { type: 'array', items: { type: 'string' } } }, required: ['element', 'ref', 'values'] },
-  browser_press_key:     { type: 'object', properties: { key: { type: 'string' } }, required: ['key'] },
-  browser_hover:         { type: 'object', properties: { element: { type: 'string' }, ref: { type: 'string' } }, required: ['element', 'ref'] },
-  browser_wait_for:      { type: 'object', properties: { time: { type: 'number' }, text: { type: 'string' }, textGone: { type: 'string' } } },
-  browser_take_screenshot: { type: 'object', properties: { raw: { type: 'boolean' } } },
-  browser_navigate_back:    { type: 'object', properties: {} },
-  browser_navigate_forward: { type: 'object', properties: {} },
-  browser_tab_list:      { type: 'object', properties: {} },
-  browser_tab_new:       { type: 'object', properties: { url: { type: 'string' } } },
-  browser_tab_select:    { type: 'object', properties: { index: { type: 'number' } }, required: ['index'] },
-  browser_tab_close:     { type: 'object', properties: { index: { type: 'number' } } },
-  browser_close:         { type: 'object', properties: {} },
-  browser_resize:        { type: 'object', properties: { width: { type: 'number' }, height: { type: 'number' } }, required: ['width', 'height'] },
-  browser_handle_dialog: { type: 'object', properties: { accept: { type: 'boolean' }, promptText: { type: 'string' } }, required: ['accept'] },
-  browser_file_upload:   { type: 'object', properties: { paths: { type: 'array', items: { type: 'string' } } }, required: ['paths'] },
-  browser_network_requests:  { type: 'object', properties: {} },
-  browser_console_messages:  { type: 'object', properties: {} },
-  browser_generate_playwright_test: { type: 'object', properties: { name: { type: 'string' }, description: { type: 'string' }, steps: { type: 'array', items: { type: 'string' } } }, required: ['name', 'description', 'steps'] },
-  // ── Registry tools (handled locally, not via MCP) ──
-  registry_get_page_components: {
-    type: 'object',
-    properties: {
-      page: { type: 'string', description: 'Page path to look up, e.g. /v1/login or /member-hr/home' },
-    },
-    required: ['page'],
-  },
-  registry_search_components: {
-    type: 'object',
-    properties: {
-      query: { type: 'string', description: 'Keyword to search in component labels and IDs' },
-    },
-    required: ['query'],
-  },
-};
-
-const REGISTRY_TOOLS = new Set(['registry_get_page_components', 'registry_search_components']);
 
 const SYSTEM_PROMPT = `You are a browser automation agent. Complete the user's task step by step using the available browser tools.
 
@@ -307,7 +266,7 @@ export class Agent {
       function: {
         name: tool.name,
         description: tool.description,
-        parameters: TOOL_SCHEMAS[tool.name] ?? { type: 'object', properties: {} },
+        parameters: toolSchema(tool.name),
       },
     }));
     return openaiTools;
