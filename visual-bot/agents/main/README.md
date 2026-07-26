@@ -17,7 +17,7 @@
 - Детектирует зацикливание (loop detector)
 
 **Зависимости:**
-- `openai` — LLM-клиент (через LM Studio)
+- `openai` — LLM-клиент (через OpenRouter по умолчанию, см. `llm-provider.ts`)
 - `mongodb` — запись шагов
 - `MCPClient` — Playwright MCP
 - `Screenshotter` — захват экрана
@@ -25,7 +25,10 @@
 - `registry-context`, `memory.ts` — контекст страницы и посещений
 
 **Переменные окружения:**
-- `LM_STUDIO_BASE_URL`, `LM_STUDIO_API_KEY` — подключение к LM Studio
+- `OPENROUTER_API_KEY`, `OPENROUTER_MODEL` — подключение к OpenRouter (провайдер по умолчанию)
+- `MAIN_PROVIDER` / `LLM_PROVIDER` — `openrouter` (default) или `ollama`
+- `MAIN_MODEL` — модель для этой роли; нужна vision-модель, если включены скриншоты
+- `OLLAMA_BASE_URL`, `OLLAMA_API_KEY` — подключение к локальной Ollama (если выбрана)
 - `MAX_ITERATIONS` (default: 60)
 - `PIPELINE_ENABLED` — включить сбор данных для пайплайна
 - `SCREENSHOTS_ENABLED`, `SNAPSHOTS_ENABLED`
