@@ -2,7 +2,7 @@ import { config } from 'dotenv';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 config({ path: resolve(dirname(fileURLToPath(import.meta.url)), '..', '.env') });
-import { readdirSync } from 'fs';
+import { readdirSync, existsSync } from 'fs';
 import { PipelineRunner } from './agents/pipeline/pipeline-runner.js';
 import { createProvider } from './llm-provider.js';
 import { resolveModel } from './utils.js';
@@ -20,6 +20,10 @@ if (arg) {
   sessionDir = arg.includes('/') || arg.includes('\\')
     ? resolve(arg)
     : resolve(sessionsDir, arg);
+} else if (!existsSync(sessionsDir)) {
+  console.error(`No sessions recorded yet (${sessionsDir} does not exist).`);
+  console.error('Run the crawl step first: npx tsx visual-bot/run.ts crawl "<task>"');
+  process.exit(1);
 } else {
   // Pick the most recent session by folder name (they're ISO-like, so lexicographic sort works)
   const sessions = readdirSync(sessionsDir).sort();
