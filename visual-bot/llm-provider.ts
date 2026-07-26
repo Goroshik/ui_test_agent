@@ -18,6 +18,21 @@ function readProviderKind(role: Role): ProviderKind {
   return role === 'coding' ? 'openrouter' : 'ollama';
 }
 
+const OLLAMA_MODEL_READERS: Record<Role, () => string> = {
+  main: () => process.env.OLLAMA_MAIN_MODEL || process.env.OLLAMA_MODEL || '',
+  planner: () => process.env.OLLAMA_PLANNER_MODEL || '',
+  analyzer: () =>
+    process.env.OLLAMA_VALIDATOR_MODEL ||
+    process.env.OLLAMA_MAIN_MODEL ||
+    process.env.OLLAMA_MODEL ||
+    '',
+  coding: () => process.env.OLLAMA_CODING_MODEL || '',
+};
+
+function readOllamaModelForRole(role: Role): string {
+  return OLLAMA_MODEL_READERS[role]();
+}
+
 function readModel(role: Role, kind: ProviderKind): string {
   const roleOverride = process.env[`${role.toUpperCase()}_MODEL`];
   if (roleOverride) return roleOverride;
@@ -26,21 +41,7 @@ function readModel(role: Role, kind: ProviderKind): string {
     return process.env.OPENROUTER_MODEL || DEFAULT_OPENROUTER_MODEL;
   }
 
-  switch (role) {
-    case 'main':
-      return process.env.OLLAMA_MAIN_MODEL || process.env.OLLAMA_MODEL || '';
-    case 'planner':
-      return process.env.OLLAMA_PLANNER_MODEL || '';
-    case 'analyzer':
-      return (
-        process.env.OLLAMA_VALIDATOR_MODEL ||
-        process.env.OLLAMA_MAIN_MODEL ||
-        process.env.OLLAMA_MODEL ||
-        ''
-      );
-    case 'coding':
-      return process.env.OLLAMA_CODING_MODEL || '';
-  }
+  return readOllamaModelForRole(role);
 }
 
 function buildOpenRouterClient(role: Role): OpenAI {

@@ -3,11 +3,23 @@ import { parseDiffJson, resizeForVision, type DiffResult } from './utils.js';
 import { AttentionMemory } from './attention-memory.js';
 import { getContentSummary, upsertContentSummary } from './pipeline/content-summary-store.js';
 
+function isJpeg(head: Buffer): boolean {
+  return head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff;
+}
+
+function isPng(head: Buffer): boolean {
+  return head[0] === 0x89 && head[1] === 0x50 && head[2] === 0x4e && head[3] === 0x47;
+}
+
+function isWebp(head: Buffer): boolean {
+  return head.slice(0, 4).toString('ascii') === 'RIFF' && head.slice(8, 12).toString('ascii') === 'WEBP';
+}
+
 function detectMime(base64: string): string {
   const head = Buffer.from(base64.slice(0, 16), 'base64');
-  if (head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff) return 'image/jpeg';
-  if (head[0] === 0x89 && head[1] === 0x50 && head[2] === 0x4e && head[3] === 0x47) return 'image/png';
-  if (head.slice(0, 4).toString('ascii') === 'RIFF' && head.slice(8, 12).toString('ascii') === 'WEBP') return 'image/webp';
+  if (isJpeg(head)) return 'image/jpeg';
+  if (isPng(head)) return 'image/png';
+  if (isWebp(head)) return 'image/webp';
   return 'image/png';
 }
 
@@ -88,6 +100,17 @@ export class VisualDiff {
     }
   }
 
+  private _buildCompareSystemPrompt(guidance: string): string {
+    const base =
+      'Compare two webpage state descriptions. Return strict JSON only: {"changed":boolean,"summary":string}. Summary must be short.';
+    const guidanceSuffix = guidance ? `\n\nPast attention rules:\n${guidance}` : '';
+    return base + guidanceSuffix;
+  }
+
+  private _parseCompareResponseText(text: string): DiffResult {
+    return parseDiffJson(text) ?? { changed: true, summary: text || 'Non-JSON response; treated as changed.' };
+  }
+
   private async _compareDescriptions(
     oldDescription: string,
     newDescription: string,
@@ -102,12 +125,7 @@ export class VisualDiff {
         model: this.model,
         temperature: 0,
         messages: [
-          {
-            role: 'system',
-            content:
-              'Compare two webpage state descriptions. Return strict JSON only: {"changed":boolean,"summary":string}. Summary must be short.' +
-              (guidance ? `\n\nPast attention rules:\n${guidance}` : ''),
-          },
+          { role: 'system', content: this._buildCompareSystemPrompt(guidance) },
           {
             role: 'user',
             content: `Key: ${key}\n\nOld state:\n${oldDescription}\n\nNew state:\n${newDescription}`,
@@ -115,7 +133,7 @@ export class VisualDiff {
         ],
       });
       const text = response.choices[0]?.message?.content?.trim() ?? '';
-      return parseDiffJson(text) ?? { changed: true, summary: text || 'Non-JSON response; treated as changed.' };
+      return this._parseCompareResponseText(text);
     } catch (err) {
       console.warn(`  VisualDiff: compare error: ${(err as Error).message}`);
       return { changed: true, summary: `Compare unavailable: ${(err as Error).message}` };

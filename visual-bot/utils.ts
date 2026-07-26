@@ -17,16 +17,20 @@ export async function resolveModel(client: OpenAI, override?: string): Promise<s
   return chat.id;
 }
 
+async function queryOllamaPs(root: string): Promise<string | null> {
+  const resp = await fetch(`${root}/api/ps`);
+  if (!resp.ok) return null;
+  const data = (await resp.json()) as { models?: Array<{ name?: string; model?: string }> };
+  const first = data.models?.[0];
+  return first?.name || first?.model || null;
+}
+
 async function fetchOllamaLoadedModel(client: OpenAI): Promise<string | null> {
   const baseUrl = String((client as unknown as { baseURL?: string }).baseURL ?? '');
   if (!baseUrl) return null;
   const root = baseUrl.replace(/\/v1\/?$/, '');
   try {
-    const resp = await fetch(`${root}/api/ps`);
-    if (!resp.ok) return null;
-    const data = (await resp.json()) as { models?: Array<{ name?: string; model?: string }> };
-    const first = data.models?.[0];
-    return first?.name || first?.model || null;
+    return await queryOllamaPs(root);
   } catch {
     return null;
   }
