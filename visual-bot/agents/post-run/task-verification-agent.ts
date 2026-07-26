@@ -34,24 +34,32 @@ export class TaskVerificationAgent {
 
   async verify(task: string, screenshotPath?: string | null): Promise<VerificationResult> {
     const imgPath = screenshotPath ?? (await this._findLastScreenshot());
-
     if (!imgPath || !existsSync(imgPath)) {
       return { success: false, reason: 'Скриншот не найден — невозможно проверить результат' };
     }
 
-    let base64: string;
-    try {
-      const buf = await readFile(imgPath);
-      base64 = buf.toString('base64');
-    } catch {
+    const dataUrl = await this._loadImageAsDataUrl(imgPath);
+    if (!dataUrl) {
       return { success: false, reason: 'Не удалось прочитать файл скриншота' };
     }
 
-    const ext = imgPath.endsWith('.jpg') || imgPath.endsWith('.jpeg') ? 'jpeg' : 'png';
-    const dataUrl = `data:image/${ext};base64,${base64}`;
-
     console.log(`\n[Verifier] Checking task completion using screenshot: ${imgPath}`);
+    const raw = await this._requestVerification(task, dataUrl);
+    return this._parseVerificationResponse(raw);
+  }
 
+  private async _loadImageAsDataUrl(imgPath: string): Promise<string | null> {
+    try {
+      const buf = await readFile(imgPath);
+      const base64 = buf.toString('base64');
+      const ext = imgPath.endsWith('.jpg') || imgPath.endsWith('.jpeg') ? 'jpeg' : 'png';
+      return `data:image/${ext};base64,${base64}`;
+    } catch {
+      return null;
+    }
+  }
+
+  private async _requestVerification(task: string, dataUrl: string): Promise<string> {
     const response = await this.client.chat.completions.create({
       model: this.model,
       messages: [
@@ -73,8 +81,11 @@ export class TaskVerificationAgent {
       temperature: 0.1,
     });
 
-    const raw = response.choices[0].message.content?.trim() ?? '';
+    const choice = response.choices[0];
+    return choice?.message.content?.trim() ?? '';
+  }
 
+  private _parseVerificationResponse(raw: string): VerificationResult {
     try {
       // Strip possible markdown fences
       const jsonStr = raw.replace(/^```[a-z]*\n?/i, '').replace(/\n?```$/i, '').trim();
@@ -106,6 +117,7 @@ export class TaskVerificationAgent {
     );
 
     withStats.sort((a, b) => b.mtime - a.mtime);
-    return withStats[0].path;
+    const newest = withStats[0];
+    return newest ? newest.path : null;
   }
 }

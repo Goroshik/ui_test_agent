@@ -10,7 +10,17 @@
     "test": "tsx visual-bot/generators/test-planner.ts && tsx visual-bot/generators/selectors-generator.ts && tsx visual-bot/generators/fixtures-generator.ts && tsx visual-bot/generators/test-generator.ts && tsx visual-bot/validators/test-validator.ts",
     "test:validate": "tsx visual-bot/validators/test-validator.ts",
     "test:ui": "yarn --cwd cypress-tests test:ui",
-    "build": "tsc"
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint visual-bot",
+    "test:unit": "vitest run",
+    "coverage": "vitest run --coverage",
+    "crap:normalize": "node scripts/normalize-coverage-paths.cjs coverage/coverage-final.json coverage/coverage-final.norm.json",
+	"crap": "yarn crap:normalize && crap4ts -c coverage/coverage-final.norm.json",
+	"crap:changed": "yarn crap:normalize && crap4ts -c coverage/coverage-final.norm.json --changed-since origin/master",
+	"gate": "node scripts/gate.cjs",
+    "mutation": "stryker run",
+    "gate:quick": "yarn typecheck && yarn lint"
   },
   "dependencies": {
     "@playwright/mcp": "^0.0.75",
@@ -20,9 +30,18 @@
     "sharp": "^0.34.5"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@stryker-mutator/core": "^9.6.1",
+    "@stryker-mutator/vitest-runner": "^9.6.1",
     "@types/node": "^25.5.0",
     "@types/sharp": "^0.31.1",
+    "@vitest/coverage-v8": "^4.1.10",
+    "crap4ts": "^1.0.1",
+    "eslint": "^10.7.0",
+    "fast-check": "^4.9.0",
     "tsx": "^4.21.0",
-    "typescript": "^6.0.2"
+    "typescript": "^6.0.2",
+    "typescript-eslint": "^8.65.0",
+    "vitest": "^4.1.10"
   }
 }

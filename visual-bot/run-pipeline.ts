@@ -23,11 +23,11 @@ if (arg) {
 } else {
   // Pick the most recent session by folder name (they're ISO-like, so lexicographic sort works)
   const sessions = readdirSync(sessionsDir).sort();
-  if (sessions.length === 0) {
+  const latest = sessions[sessions.length - 1];
+  if (sessions.length === 0 || !latest) {
     console.error('No sessions found in', sessionsDir);
     process.exit(1);
   }
-  const latest = sessions[sessions.length - 1];
   sessionDir = resolve(sessionsDir, latest);
   console.log(`No session specified — using latest: ${latest}`);
 }

@@ -9,4 +9,7 @@ visual-bot/screenshots/*.jpeg
 /logs/
 /data/
 /.playwright-mcp/
-/.claude/
+/.claude/*
+!/.claude/settings.json
+/coverage/
+/reports/

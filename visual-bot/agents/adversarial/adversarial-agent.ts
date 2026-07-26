@@ -68,23 +68,9 @@ export class AdversarialAgent {
     }
 
     await this.mcp.connect();
-    const observations: AdversarialObservation[] = [];
-
+    let observations: AdversarialObservation[];
     try {
-      for (const [page, { inputs, submit }] of byPage) {
-        const pageUrl = this._fullUrl(baseUrl, page);
-        console.log(`[Adversarial] Probing ${page} (${inputs.length} input(s))`);
-
-        for (const input of inputs) {
-          const edges = deriveEdgeCases(input).filter(
-            (e) => e.action === 'fill' && typeof e.input === 'string',
-          );
-          for (const edge of edges) {
-            const obs = await this._probe(pageUrl, page, input, submit, edge);
-            if (obs) observations.push(obs);
-          }
-        }
-      }
+      observations = await this._probeAllPages(byPage, baseUrl);
     } finally {
       this.mcp.disconnect();
     }
@@ -98,13 +84,61 @@ export class AdversarialAgent {
 
   // ─── Probing ────────────────────────────────────────────────────────────────
 
-  private async _probe(
-    pageUrl: string,
-    page: string,
-    input: ComponentRecord,
-    submit: ComponentRecord | null,
-    edge: TestEdgeCase,
-  ): Promise<AdversarialObservation | null> {
+  private async _probeAllPages(
+    byPage: Map<string, { inputs: ComponentRecord[]; submit: ComponentRecord | null }>,
+    baseUrl: string,
+  ): Promise<AdversarialObservation[]> {
+    const observations: AdversarialObservation[] = [];
+    for (const [page, { inputs, submit }] of byPage) {
+      const pageUrl = this._fullUrl(baseUrl, page);
+      console.log(`[Adversarial] Probing ${page} (${inputs.length} input(s))`);
+      const pageObservations = await this._probePageInputs({ pageUrl, page, inputs, submit });
+      observations.push(...pageObservations);
+    }
+    return observations;
+  }
+
+  private async _probePageInputs(params: {
+    pageUrl: string;
+    page: string;
+    inputs: ComponentRecord[];
+    submit: ComponentRecord | null;
+  }): Promise<AdversarialObservation[]> {
+    const { pageUrl, page, inputs, submit } = params;
+    const observations: AdversarialObservation[] = [];
+    for (const input of inputs) {
+      const inputObservations = await this._probeInputEdges({ pageUrl, page, input, submit });
+      observations.push(...inputObservations);
+    }
+    return observations;
+  }
+
+  private async _probeInputEdges(params: {
+    pageUrl: string;
+    page: string;
+    input: ComponentRecord;
+    submit: ComponentRecord | null;
+  }): Promise<AdversarialObservation[]> {
+    const { pageUrl, page, input, submit } = params;
+    const edges = deriveEdgeCases(input).filter(
+      (e) => e.action === 'fill' && typeof e.input === 'string',
+    );
+    const observations: AdversarialObservation[] = [];
+    for (const edge of edges) {
+      const obs = await this._probe({ pageUrl, page, input, submit, edge });
+      if (obs) observations.push(obs);
+    }
+    return observations;
+  }
+
+  private async _probe(params: {
+    pageUrl: string;
+    page: string;
+    input: ComponentRecord;
+    submit: ComponentRecord | null;
+    edge: TestEdgeCase;
+  }): Promise<AdversarialObservation | null> {
+    const { pageUrl, page, input, submit, edge } = params;
     const selector = this._selectorOf(input);
     if (!selector) return null;
 
@@ -113,38 +147,19 @@ export class AdversarialAgent {
     const before = await this._readState();
 
     // Fill the bad value into the target field.
-    try {
-      await this.mcp.callTool('browser_type', {
-        element: input.label,
-        target: selector,
-        text: edge.input ?? '',
-      });
-    } catch {
-      return null; // field not present / not typable
-    }
+    const filled = await this._fillField(input, selector, edge.input ?? '');
+    if (!filled) return null; // field not present / not typable
 
     // Submit: prefer the page's submit button, else press Enter in the field.
-    let networkStatus: number | null = null;
-    if (submit) {
-      const submitSel = this._selectorOf(submit);
-      if (submitSel) {
-        try {
-          await this.mcp.callTool('browser_click', { element: submit.label, target: submitSel });
-        } catch { /* ignore */ }
-      }
-    } else {
-      try {
-        await this.mcp.callTool('browser_press_key', { key: 'Enter' });
-      } catch { /* ignore */ }
-    }
+    await this._submitForm(submit);
 
     // Give the app a moment, then read post-submit state.
     await this._wait(600);
     const after = await this._readState();
-    networkStatus = await this._lastNetworkStatus();
+    const networkStatus = await this._lastNetworkStatus();
 
     const urlChanged = before.url !== after.url;
-    const observation: AdversarialObservation = {
+    return {
       componentId: input.id,
       page,
       edgeType: edge.type,
@@ -158,7 +173,34 @@ export class AdversarialAgent {
       },
       expected: this._describeExpectation(urlChanged, after, networkStatus),
     };
-    return observation;
+  }
+
+  private async _fillField(input: ComponentRecord, selector: string, value: string): Promise<boolean> {
+    try {
+      await this.mcp.callTool('browser_type', {
+        element: input.label,
+        target: selector,
+        text: value,
+      });
+      return true;
+    } catch {
+      return false; // field not present / not typable
+    }
+  }
+
+  private async _submitForm(submit: ComponentRecord | null): Promise<void> {
+    if (submit) {
+      const submitSel = this._selectorOf(submit);
+      if (submitSel) {
+        try {
+          await this.mcp.callTool('browser_click', { element: submit.label, target: submitSel });
+        } catch { /* ignore */ }
+      }
+      return;
+    }
+    try {
+      await this.mcp.callTool('browser_press_key', { key: 'Enter' });
+    } catch { /* ignore */ }
   }
 
   private _describeExpectation(urlChanged: boolean, after: PageState, status: number | null): string {
@@ -200,7 +242,7 @@ export class AdversarialAgent {
       // Find the last "=> [NNN]" style status in the network log.
       const matches = [...text.matchAll(/=>\s*\[?(\d{3})\]?/g)];
       const last = matches[matches.length - 1];
-      return last ? parseInt(last[1], 10) : null;
+      return last?.[1] ? parseInt(last[1], 10) : null;
     } catch {
       return null;
     }
@@ -219,9 +261,7 @@ export class AdversarialAgent {
     const comps = Object.values(registry.components);
 
     for (const comp of comps) {
-      const c = comp.constraints;
-      const isInput = c && (comp.componentType === 'textbox' || ['input', 'textarea'].includes(c.inputType ?? '') || c.inputType);
-      if (!isInput) continue;
+      if (!this._isConstrainedInput(comp)) continue;
       const page = comp.pages[0] ?? '/';
       const entry = result.get(page) ?? { inputs: [], submit: null };
       entry.inputs.push(comp);
@@ -230,26 +270,43 @@ export class AdversarialAgent {
 
     // Attach a submit button per page (a button with a network action, or labelled like submit).
     for (const [page, entry] of result) {
-      const submit = comps.find(
-        (c) =>
-          c.pages.includes(page) &&
-          (c.componentType === 'button' || c.actions.some((a) => a.type === 'click')) &&
-          (/sign in|log\s?in|submit|continue|next|save/i.test(c.label) || c.actions.some((a) => a.network)),
-      );
-      entry.submit = submit ?? null;
+      entry.submit = this._findSubmit(comps, page);
     }
 
     return result;
   }
 
+  private _isConstrainedInput(comp: ComponentRecord): boolean {
+    const c = comp.constraints;
+    if (!c) return false;
+    return comp.componentType === 'textbox' || ['input', 'textarea'].includes(c.inputType ?? '') || Boolean(c.inputType);
+  }
+
+  private _findSubmit(comps: ComponentRecord[], page: string): ComponentRecord | null {
+    const submit = comps.find(
+      (c) =>
+        c.pages.includes(page) &&
+        (c.componentType === 'button' || c.actions.some((a) => a.type === 'click')) &&
+        (/sign in|log\s?in|submit|continue|next|save/i.test(c.label) || c.actions.some((a) => a.network)),
+    );
+    return submit ?? null;
+  }
+
   private _selectorOf(comp: ComponentRecord): string | null {
     const s = comp.selectors;
-    if (s.testid) return s.testid.startsWith('[data-') ? s.testid : `[data-testid="${s.testid}"]`;
+    if (s.testid) return this._testidSelector(s.testid);
     if (s.css) return s.css;
-    if (s.preferred?.startsWith('[data-') || s.preferred?.startsWith('#') || s.preferred?.startsWith('.')) {
-      return s.preferred;
-    }
+    const preferred = s.preferred;
+    if (preferred && this._looksLikeCssSelector(preferred)) return preferred;
     return null;
+  }
+
+  private _testidSelector(testid: string): string {
+    return testid.startsWith('[data-') ? testid : `[data-testid="${testid}"]`;
+  }
+
+  private _looksLikeCssSelector(preferred: string): boolean {
+    return preferred.startsWith('[data-') || preferred.startsWith('#') || preferred.startsWith('.');
   }
 
   private _fullUrl(baseUrl: string, page: string): string {

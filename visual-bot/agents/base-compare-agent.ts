@@ -22,10 +22,7 @@ export abstract class BaseCompareAgent {
 
   async process(): Promise<void> {
     await this.ensureDirs();
-    const acceptedExts = [this.ext, ...this.extraExts];
-    const files = (await readdir(this.INCOMING_DIR))
-      .filter((name) => acceptedExts.some((e) => name.toLowerCase().endsWith(e)))
-      .sort();
+    const files = await this.listIncomingFiles();
 
     if (files.length === 0) {
       console.log(`${this.label}: no new files.`);
@@ -34,50 +31,75 @@ export abstract class BaseCompareAgent {
 
     console.log(`${this.label}: processing ${files.length} file(s)...`);
     for (const file of files) {
-      const incomingPath = resolve(this.INCOMING_DIR, file);
-      const key = this.extractKey(file);
-      const baselines = await this.listBaselines(key);
-      const baselinePath = baselines.at(-1) ?? null;
-
-      const fileExt = this.fileExt(file);
-
-      if (!baselinePath) {
-        const newBaselinePath = resolve(this.BASELINE_DIR, `${key}__${this.timestamp()}${fileExt}`);
-        await rename(incomingPath, newBaselinePath);
-        await this.pruneOldBaselines(key, this.baselineKeepCount);
-        console.log(`  Baseline created: ${newBaselinePath}`);
-        continue;
-      }
-
-      const oldContent = await this.readContent(baselinePath);
-      const newContent = await this.readContent(incomingPath);
-      const diff = await this.runDiff(oldContent, newContent, key);
-
-      if (!diff.changed) {
-        await rm(incomingPath);
-        console.log(`  Unchanged (${key}) -> removed`);
-        continue;
-      }
-
-      const stamp = this.timestamp();
-      const diffDir = resolve(this.CHANGES_DIR, `${stamp}-${key}`);
-      await mkdir(diffDir, { recursive: true });
-
-      const baselineExt = this.fileExt(baselinePath);
-      await copyFile(baselinePath, resolve(diffDir, `old${baselineExt}`));
-      await copyFile(incomingPath, resolve(diffDir, `new${fileExt}`));
-      await writeFile(resolve(diffDir, 'changes.txt'), diff.summary || 'Change detected.', 'utf-8');
-
-      const newBaselinePath = resolve(this.BASELINE_DIR, `${key}__${stamp}${fileExt}`);
-      await rename(incomingPath, newBaselinePath);
-      await this.pruneOldBaselines(key, this.baselineKeepCount);
-      await this.pruneOldChanges(key, this.changesKeepCount);
-      console.log(`  Changed (${key}) -> saved diff: ${diffDir}`);
+      await this.processFile(file);
     }
 
     if (this.cleanupChangesAfterProcess) {
       await this.clearChangesDir();
     }
+  }
+
+  private async listIncomingFiles(): Promise<string[]> {
+    const acceptedExts = [this.ext, ...this.extraExts];
+    return (await readdir(this.INCOMING_DIR))
+      .filter((name) => acceptedExts.some((e) => name.toLowerCase().endsWith(e)))
+      .sort();
+  }
+
+  private async createBaseline(incomingPath: string, key: string, fileExt: string): Promise<void> {
+    const newBaselinePath = resolve(this.BASELINE_DIR, `${key}__${this.timestamp()}${fileExt}`);
+    await rename(incomingPath, newBaselinePath);
+    await this.pruneOldBaselines(key, this.baselineKeepCount);
+    console.log(`  Baseline created: ${newBaselinePath}`);
+  }
+
+  private async saveChangedDiff(params: {
+    incomingPath: string;
+    baselinePath: string;
+    key: string;
+    fileExt: string;
+    diff: DiffResult;
+  }): Promise<void> {
+    const { incomingPath, baselinePath, key, fileExt, diff } = params;
+    const stamp = this.timestamp();
+    const diffDir = resolve(this.CHANGES_DIR, `${stamp}-${key}`);
+    await mkdir(diffDir, { recursive: true });
+
+    const baselineExt = this.fileExt(baselinePath);
+    await copyFile(baselinePath, resolve(diffDir, `old${baselineExt}`));
+    await copyFile(incomingPath, resolve(diffDir, `new${fileExt}`));
+    await writeFile(resolve(diffDir, 'changes.txt'), diff.summary || 'Change detected.', 'utf-8');
+
+    const newBaselinePath = resolve(this.BASELINE_DIR, `${key}__${stamp}${fileExt}`);
+    await rename(incomingPath, newBaselinePath);
+    await this.pruneOldBaselines(key, this.baselineKeepCount);
+    await this.pruneOldChanges(key, this.changesKeepCount);
+    console.log(`  Changed (${key}) -> saved diff: ${diffDir}`);
+  }
+
+  private async processFile(file: string): Promise<void> {
+    const incomingPath = resolve(this.INCOMING_DIR, file);
+    const key = this.extractKey(file);
+    const baselines = await this.listBaselines(key);
+    const baselinePath = baselines.at(-1) ?? null;
+    const fileExt = this.fileExt(file);
+
+    if (!baselinePath) {
+      await this.createBaseline(incomingPath, key, fileExt);
+      return;
+    }
+
+    const oldContent = await this.readContent(baselinePath);
+    const newContent = await this.readContent(incomingPath);
+    const diff = await this.runDiff(oldContent, newContent, key);
+
+    if (!diff.changed) {
+      await rm(incomingPath);
+      console.log(`  Unchanged (${key}) -> removed`);
+      return;
+    }
+
+    await this.saveChangedDiff({ incomingPath, baselinePath, key, fileExt, diff });
   }
 
   private async clearChangesDir(): Promise<void> {

@@ -37,24 +37,20 @@ export class NetworkAnalyzerAgent {
     this.model = model;
   }
 
-  async analyze(sessionDir: string): Promise<void> {
-    const networkDir = join(sessionDir, 'raw', 'network');
-    let files: string[];
+  private async _listNetworkFiles(networkDir: string): Promise<string[] | null> {
     try {
-      files = (await readdir(networkDir))
+      return (await readdir(networkDir))
         .filter((f) => f.endsWith('-network.json') && !f.includes('-after'))
         .sort();
     } catch {
-      console.log('[NetworkAnalyzer] No network directory, skipping');
-      return;
+      return null;
     }
+  }
 
-    if (files.length === 0) {
-      console.log('[NetworkAnalyzer] No network files found');
-      return;
-    }
-
-    // Load and pre-filter all steps
+  private async _loadNetworkLog(
+    networkDir: string,
+    files: string[],
+  ): Promise<Array<{ stepId: string; requests: string[] }>> {
     const networkLog: Array<{ stepId: string; requests: string[] }> = [];
     for (const file of files) {
       const stepId = file.replace('-network.json', '');
@@ -68,6 +64,44 @@ export class NetworkAnalyzerAgent {
         // skip malformed files
       }
     }
+    return networkLog;
+  }
+
+  private _logBatchRange(batch: Array<{ stepId: string; requests: string[] }>, batchNumber: number): void {
+    const first = batch[0];
+    const last = batch[batch.length - 1];
+    const range = first && last ? `${first.stepId}…${last.stepId}` : '';
+    console.log(`[NetworkAnalyzer] Batch ${batchNumber}: steps ${range}`);
+  }
+
+  private async _extractAllBatches(
+    networkLog: Array<{ stepId: string; requests: string[] }>,
+  ): Promise<NetworkStepMap[]> {
+    const allMaps: NetworkStepMap[] = [];
+    for (let i = 0; i < networkLog.length; i += BATCH_SIZE) {
+      const batch = networkLog.slice(i, i + BATCH_SIZE);
+      this._logBatchRange(batch, Math.floor(i / BATCH_SIZE) + 1);
+      const maps = await this._extract(batch);
+      allMaps.push(...maps);
+    }
+    return allMaps;
+  }
+
+  async analyze(sessionDir: string): Promise<void> {
+    const networkDir = join(sessionDir, 'raw', 'network');
+    const files = await this._listNetworkFiles(networkDir);
+
+    if (files === null) {
+      console.log('[NetworkAnalyzer] No network directory, skipping');
+      return;
+    }
+
+    if (files.length === 0) {
+      console.log('[NetworkAnalyzer] No network files found');
+      return;
+    }
+
+    const networkLog = await this._loadNetworkLog(networkDir, files);
 
     if (networkLog.length === 0) {
       console.log('[NetworkAnalyzer] No meaningful API calls found after filtering');
@@ -82,14 +116,7 @@ export class NetworkAnalyzerAgent {
 
     console.log(`[NetworkAnalyzer] ${networkLog.length} step(s) with API calls (batches of ${BATCH_SIZE})…`);
 
-    // Process in batches
-    const allMaps: NetworkStepMap[] = [];
-    for (let i = 0; i < networkLog.length; i += BATCH_SIZE) {
-      const batch = networkLog.slice(i, i + BATCH_SIZE);
-      console.log(`[NetworkAnalyzer] Batch ${Math.floor(i / BATCH_SIZE) + 1}: steps ${batch[0].stepId}…${batch[batch.length - 1].stepId}`);
-      const maps = await this._extract(batch);
-      allMaps.push(...maps);
-    }
+    const allMaps = await this._extractAllBatches(networkLog);
 
     const outPath = join(sessionDir, 'analyzed', 'network-map.json');
     await writeFile(outPath, JSON.stringify(allMaps, null, 2), 'utf-8');
@@ -111,8 +138,8 @@ export class NetworkAnalyzerAgent {
 
       // Extract URL
       const urlMatch = trimmed.match(/\]\s+(https?:\/\/[^\s=>]+)/);
-      if (!urlMatch) continue;
-      const url = urlMatch[1];
+      const url = urlMatch?.[1];
+      if (!url) continue;
 
       // Skip noise domains
       if (NOISE_DOMAINS.some((d) => url.includes(d))) continue;

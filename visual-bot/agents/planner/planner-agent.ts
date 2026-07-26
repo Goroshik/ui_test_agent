@@ -41,11 +41,26 @@ Rules:
 export class PlannerAgent {
   private client: OpenAI;
   private model: string | null = null;
-  private modelOverride?: string;
+  private modelOverride: string | undefined;
 
   constructor(client: OpenAI, modelOverride?: string) {
     this.client = client;
     this.modelOverride = modelOverride;
+  }
+
+  private async _resolveContext(memoryContext?: string): Promise<string> {
+    // Priority: rich analysis → known pages summary → basic URL list
+    return memoryContext || await getPageSummary() || await getVisitSummary();
+  }
+
+  private _buildUserMessage(userTask: string, context: string): string {
+    if (!context) return `Task: ${userTask}`;
+    return `Task: ${userTask}\n\n## Site knowledge from previous runs\n${context}`;
+  }
+
+  private _extractPlanText(response: OpenAI.Chat.Completions.ChatCompletion): string {
+    const choice = response.choices[0];
+    return choice?.message.content?.trim() ?? '';
   }
 
   async plan(userTask: string, memoryContext?: string): Promise<string> {
@@ -53,12 +68,8 @@ export class PlannerAgent {
       this.model = await resolveModel(this.client, this.modelOverride);
     }
 
-    // Priority: rich analysis → known pages summary → basic URL list
-    const context = memoryContext || await getPageSummary() || await getVisitSummary();
-
-    const userMessage = context
-      ? `Task: ${userTask}\n\n## Site knowledge from previous runs\n${context}`
-      : `Task: ${userTask}`;
+    const context = await this._resolveContext(memoryContext);
+    const userMessage = this._buildUserMessage(userTask, context);
 
     console.log('\n[Planner] Generating execution plan...');
 
@@ -71,7 +82,7 @@ export class PlannerAgent {
       temperature: 0.3,
     });
 
-    const plan = response.choices[0].message.content?.trim() ?? '';
+    const plan = this._extractPlanText(response);
 
     if (!plan) {
       throw new Error('Planner returned an empty plan');

@@ -33,10 +33,9 @@ function extractToolCalls(
 
   for (const msg of messages) {
     if (msg.role !== 'assistant') continue;
-    const m = msg as OpenAI.Chat.ChatCompletionAssistantMessageParam;
-    if (!m.tool_calls) continue;
+    if (!msg.tool_calls) continue;
 
-    for (const tc of m.tool_calls) {
+    for (const tc of msg.tool_calls) {
       let args: Record<string, unknown> = {};
       try {
         args = JSON.parse(tc.function.arguments || '{}') as Record<string, unknown>;
@@ -68,7 +67,8 @@ function normalizeArgs(tool: string, args: Record<string, unknown>): string {
 
   if (INTERACTION_TOOLS.has(tool)) {
     // ref меняется между snapshot-ами, не сравниваем его
-    const { ref: _ref, ...rest } = args as { ref?: unknown; [k: string]: unknown };
+    const rest = { ...args };
+    delete rest.ref;
     return JSON.stringify(rest);
   }
 
@@ -87,10 +87,14 @@ function detectLoop(
   }
 
   const last = calls[calls.length - 1];
+  if (!last) {
+    return { isLoop: false };
+  }
   let count = 0;
 
   for (let i = calls.length - 1; i >= 0; i--) {
-    if (calls[i].tool === last.tool && calls[i].argsKey === last.argsKey) {
+    const call = calls[i];
+    if (call && call.tool === last.tool && call.argsKey === last.argsKey) {
       count++;
     } else {
       break;

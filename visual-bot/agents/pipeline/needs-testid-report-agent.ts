@@ -8,6 +8,14 @@ import type {
   ClassifiedComponent,
 } from '../../pipeline/types.js';
 
+/** Outcome of grading a component's selectors for test-generation readiness. */
+interface SelectorDecision {
+  quality: ClassifiedComponent['selectorQuality'];
+  classification: ClassifiedComponent['classification'];
+  blocking: boolean;
+  currentBestSelector: string;
+}
+
 /**
  * Reads the freshly merged registry and classifies every component the user
  * interacted with into:
@@ -75,50 +83,7 @@ export class NeedsTestIdReportAgent {
   private _classify(c: ComponentRecord): ClassifiedComponent {
     const interacted = c.actions.length > 0;
     const userAction = c.actions[0]?.type ?? null;
-
-    const sel = c.selectors;
-    const testid = sel.testid;
-    const css = sel.css;
-    const preferred = sel.preferred || '';
-
-    let quality: ClassifiedComponent['selectorQuality'] = 'none';
-    let classification: ClassifiedComponent['classification'] = 'low-priority';
-    let blocking = false;
-    let currentBestSelector = '';
-
-    if (testid && testid !== 'null') {
-      quality = 'stable';
-      classification = 'ready';
-      currentBestSelector = testid;
-    } else if (css && /^\[data-(testid|cy|qa|test)=/.test(css)) {
-      quality = 'stable';
-      classification = 'ready';
-      currentBestSelector = css;
-    } else if (css && /^#[a-z][\w-]*$/i.test(css)) {
-      quality = 'stable';
-      classification = 'ready';
-      currentBestSelector = css;
-    } else if (css) {
-      quality = 'text-based';
-      classification = interacted ? 'needs-attention' : 'low-priority';
-      blocking = interacted;
-      currentBestSelector = css;
-    } else if (preferred && /^\[data-(testid|cy|qa)=/.test(preferred)) {
-      quality = 'stable';
-      classification = 'ready';
-      currentBestSelector = preferred;
-    } else if (preferred) {
-      // ARIA-style locator (e.g. `link[name="..."]`) — text-based, fragile in Cypress
-      quality = 'text-based';
-      classification = interacted ? 'needs-attention' : 'low-priority';
-      blocking = interacted;
-      currentBestSelector = preferred;
-    } else {
-      quality = 'none';
-      classification = interacted ? 'needs-attention' : 'low-priority';
-      blocking = interacted;
-      currentBestSelector = '(none)';
-    }
+    const selectorInfo = this._determineSelector(c.selectors, interacted);
 
     return {
       componentId: c.id,
@@ -128,27 +93,72 @@ export class NeedsTestIdReportAgent {
       label: c.label,
       interactedByUser: interacted,
       userAction,
-      currentBestSelector,
-      selectorQuality: quality,
-      classification,
-      blocking,
+      currentBestSelector: selectorInfo.currentBestSelector,
+      selectorQuality: selectorInfo.quality,
+      classification: selectorInfo.classification,
+      blocking: selectorInfo.blocking,
       suggestion: null,
     };
+  }
+
+  // Signature kept on one line: crap4ts matches coverage to a function by span
+  // overlap (>=0.8), so a signature long relative to the body sinks the ratio
+  // and the function silently reports 0% coverage however well it is tested.
+  private _determineSelector(sel: ComponentRecord['selectors'], interacted: boolean): SelectorDecision {
+    const testid = sel.testid;
+    const css = sel.css;
+    const preferred = sel.preferred || '';
+
+    const stableSelector = this._findStableSelector(testid, css, preferred);
+    if (stableSelector) {
+      return { quality: 'stable', classification: 'ready', blocking: false, currentBestSelector: stableSelector };
+    }
+
+    // ARIA-style locator (e.g. `link[name="..."]`) — text-based, fragile in Cypress
+    const fallbackSelector = css || preferred;
+    return {
+      quality: fallbackSelector ? 'text-based' : 'none',
+      classification: interacted ? 'needs-attention' : 'low-priority',
+      blocking: interacted,
+      currentBestSelector: fallbackSelector || '(none)',
+    };
+  }
+
+  // Signature on one line for the same span-overlap reason as _determineSelector.
+  private _findStableSelector(testid: string | null, css: string | null, preferred: string): string | null {
+    if (testid && testid !== 'null') return testid;
+    if (css) {
+      if (/^\[data-(testid|cy|qa|test)=/.test(css)) return css;
+      if (/^#[a-z][\w-]*$/i.test(css)) return css;
+      // css present but not a stable pattern — falls through to text-based handling
+      return null;
+    }
+    if (preferred && /^\[data-(testid|cy|qa)=/.test(preferred)) return preferred;
+    return null;
   }
 
   // ─── LLM: suggest test-id names ──────────────────────────────────────────────
 
   private async _suggestTestIds(items: ClassifiedComponent[]): Promise<void> {
     // Batch by page for nicer context.
-    const byPage = new Map<string, ClassifiedComponent[]>();
+    const byPage = this._groupByPage(items);
+    for (const [page, list] of byPage) {
+      await this._suggestForPage(page, list);
+    }
+  }
+
+  private _groupByPage<T extends { page: string }>(items: T[]): Map<string, T[]> {
+    const byPage = new Map<string, T[]>();
     for (const it of items) {
       const arr = byPage.get(it.page) ?? [];
       arr.push(it);
       byPage.set(it.page, arr);
     }
+    return byPage;
+  }
 
-    for (const [page, list] of byPage) {
-      const prompt = `You are helping name data-testid attributes for a web app.
+  private _buildSuggestTestIdPrompt(page: string, list: ClassifiedComponent[]): string {
+    return `You are helping name data-testid attributes for a web app.
 Page: ${page}
 
 For each component below, propose a stable, lowercase, kebab-case data-testid
@@ -174,30 +184,36 @@ Return ONLY a JSON array, one entry per component, in the same order:
   { "id": "<componentId>", "suggestedTestId": "kebab-case-id", "reason": "<short why>" },
   ...
 ]`;
+  }
 
-      try {
-        const resp = await this.client.chat.completions.create({
-          model: this.model,
-          messages: [{ role: 'user', content: prompt }],
-          temperature: 0,
-        });
-        const text = resp.choices[0]?.message?.content ?? '';
-        const match = text.match(/\[[\s\S]*\]/);
-        if (!match) continue;
-        const parsed = JSON.parse(match[0]) as Array<{
-          id: string;
-          suggestedTestId: string;
-          reason: string;
-        }>;
-        const byId = new Map(parsed.map((p) => [p.id, p]));
-        for (const it of list) {
-          const s = byId.get(it.componentId);
-          if (s?.suggestedTestId) {
-            it.suggestion = { suggestedTestId: s.suggestedTestId, reason: s.reason ?? '' };
-          }
-        }
-      } catch (err) {
-        console.warn(`[NeedsTestId] LLM call failed for ${page}: ${(err as Error).message}`);
+  private async _suggestForPage(page: string, list: ClassifiedComponent[]): Promise<void> {
+    const prompt = this._buildSuggestTestIdPrompt(page, list);
+    try {
+      const resp = await this.client.chat.completions.create({
+        model: this.model,
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0,
+      });
+      const text = resp.choices[0]?.message?.content ?? '';
+      this._applySuggestions(text, list);
+    } catch (err) {
+      console.warn(`[NeedsTestId] LLM call failed for ${page}: ${(err as Error).message}`);
+    }
+  }
+
+  private _applySuggestions(text: string, list: ClassifiedComponent[]): void {
+    const match = text.match(/\[[\s\S]*\]/);
+    if (!match) return;
+    const parsed = JSON.parse(match[0]) as Array<{
+      id: string;
+      suggestedTestId: string;
+      reason: string;
+    }>;
+    const byId = new Map(parsed.map((p) => [p.id, p]));
+    for (const it of list) {
+      const s = byId.get(it.componentId);
+      if (s?.suggestedTestId) {
+        it.suggestion = { suggestedTestId: s.suggestedTestId, reason: s.reason ?? '' };
       }
     }
   }
@@ -210,7 +226,15 @@ Return ONLY a JSON array, one entry per component, in the same order:
       (c) => !c.blocking && c.classification !== 'ready',
     );
 
-    const lines: string[] = [
+    const lines = this._renderMarkdownHeader();
+    lines.push(...this._renderBlockersSection(blockers));
+    lines.push(...this._renderLowPrioritySection(lowPriority));
+
+    return lines.join('\n');
+  }
+
+  private _renderMarkdownHeader(): string[] {
+    return [
       '# Components needing `data-testid`',
       '',
       `Generated: ${new Date().toISOString()}`,
@@ -220,40 +244,47 @@ Return ONLY a JSON array, one entry per component, in the same order:
       'attributes; until then, generated tests that depend on them will be `it.skip`.',
       '',
     ];
+  }
 
-    // Group blockers by page.
-    const byPage = new Map<string, ClassifiedComponent[]>();
-    for (const c of blockers) {
-      const arr = byPage.get(c.page) ?? [];
-      arr.push(c);
-      byPage.set(c.page, arr);
+  private _renderBlockersSection(blockers: ClassifiedComponent[]): string[] {
+    const byPage = this._groupByPage(blockers);
+    if (byPage.size === 0) {
+      return ['🎉 No blocking components — every interacted element has a stable selector.', ''];
     }
 
-    if (byPage.size === 0) {
-      lines.push('🎉 No blocking components — every interacted element has a stable selector.', '');
-    } else {
-      for (const [page, list] of byPage) {
-        lines.push(`## \`${page}\``, '');
-        for (const c of list) {
-          lines.push(`### ${c.label} (${c.ariaRole ?? 'unknown'})`);
-          lines.push(`- User action: \`${c.userAction ?? '—'}\``);
-          lines.push(`- Current best selector: \`${c.currentBestSelector}\` (${c.selectorQuality})`);
-          if (c.suggestion) {
-            lines.push(`- **Suggested**: \`data-testid="${c.suggestion.suggestedTestId}"\``);
-            if (c.suggestion.reason) lines.push(`- Reason: ${c.suggestion.reason}`);
-          }
-          lines.push(`- Component id: \`${c.componentId}\``);
-          lines.push('');
-        }
+    const lines: string[] = [];
+    for (const [page, list] of byPage) {
+      lines.push(`## \`${page}\``, '');
+      for (const c of list) {
+        lines.push(...this._renderComponentLines(c));
       }
     }
+    return lines;
+  }
 
-    if (lowPriority.length > 0) {
-      lines.push('---', '');
-      lines.push(`## Low priority (${lowPriority.length} non-interacted components)`, '');
-      lines.push('Not blocking, but adding `data-testid` would still help future tests.', '');
+  private _renderComponentLines(c: ClassifiedComponent): string[] {
+    const lines = [
+      `### ${c.label} (${c.ariaRole ?? 'unknown'})`,
+      `- User action: \`${c.userAction ?? '—'}\``,
+      `- Current best selector: \`${c.currentBestSelector}\` (${c.selectorQuality})`,
+    ];
+    if (c.suggestion) {
+      lines.push(`- **Suggested**: \`data-testid="${c.suggestion.suggestedTestId}"\``);
+      if (c.suggestion.reason) lines.push(`- Reason: ${c.suggestion.reason}`);
     }
+    lines.push(`- Component id: \`${c.componentId}\``, '');
+    return lines;
+  }
 
-    return lines.join('\n');
+  private _renderLowPrioritySection(lowPriority: ClassifiedComponent[]): string[] {
+    if (lowPriority.length === 0) return [];
+    return [
+      '---',
+      '',
+      `## Low priority (${lowPriority.length} non-interacted components)`,
+      '',
+      'Not blocking, but adding `data-testid` would still help future tests.',
+      '',
+    ];
   }
 }

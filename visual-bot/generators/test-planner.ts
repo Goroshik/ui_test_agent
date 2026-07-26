@@ -8,6 +8,7 @@ import type {
   ComponentRecord,
   ComponentRegistry,
   SessionMeta,
+  ActionElement,
 } from '../pipeline/types.js';
 import { runLlm } from '../agents/test-gen/llm-runner.js';
 import { deriveEdgeCases } from './edge-case-deriver.js';
@@ -83,6 +84,12 @@ export interface TestPlan {
 
 // ─── Planner ──────────────────────────────────────────────────────────────────
 
+export interface PlanOptions {
+  sessionId?: string | undefined;
+  limit?: number;
+  goal?: string | undefined;
+}
+
 export class TestPlanner {
   /** componentId → grounded edge cases (DOM constraints + network). */
   private derivedEdges = new Map<string, TestEdgeCase[]>();
@@ -93,80 +100,22 @@ export class TestPlanner {
     sessionsDir: string,
     registryPath: string,
     outputPath: string,
-    sessionId?: string,
-    limit = 10,
-    goal?: string,
+    options: PlanOptions = {},
   ): Promise<TestPlan> {
+    const { sessionId, limit = 10, goal } = options;
+
     if (!existsSync(registryPath)) {
       throw new Error(`Registry not found: ${registryPath}`);
     }
-    const registry: ComponentRegistry = JSON.parse(await readFile(registryPath, 'utf-8'));
+    const registry = JSON.parse(await readFile(registryPath, 'utf-8')) as ComponentRegistry;
 
-    // Load adversarial observations (if a probe run produced them) → real `expected`.
-    const observations = await this._loadObservations(sessionsDir, sessionId);
+    await this._prepareGroundedEdgesAndBlocking(registry, sessionsDir, sessionId, registryPath);
 
-    // Precompute grounded edge cases for every component (deterministic).
-    this.derivedEdges.clear();
-    for (const comp of Object.values(registry.components)) {
-      const edges = deriveEdgeCases(comp);
-      // Override `expected` with observed reality where we probed it.
-      for (const e of edges) {
-        const obs = observations.find(
-          (o) => o.componentId === e.component && o.input === (e.input ?? '') && o.edgeType === e.type,
-        );
-        if (obs) {
-          e.expected = obs.expected;
-          e.source = 'network-observed';
-        }
-      }
-      if (edges.length > 0) this.derivedEdges.set(comp.id, edges);
-    }
+    const sessionDirs = await this._resolveSessionDirs(sessionsDir, sessionId, limit);
+    const allSessionData = await this._loadAllSessions(sessionDirs);
 
-    // Load classification report (if present) → know which components are blocking.
-    this.blockingIds = await this._loadBlockingIds(registryPath);
-    if (this.blockingIds.size > 0) {
-      console.log(`[TestPlanner] ${this.blockingIds.size} blocking component(s) excluded (see needs-testid.md)`);
-    }
-    const grounded = [...this.derivedEdges.values()].reduce((n, e) => n + e.length, 0);
-    console.log(`[TestPlanner] ${grounded} grounded edge case(s) derived from DOM/network`);
-
-    const sessionDirs = sessionId
-      ? [join(sessionsDir, sessionId)]
-      : await this._listSessions(sessionsDir);
-
-    if (sessionDirs.length === 0) {
-      throw new Error('No sessions found in ' + sessionsDir);
-    }
-
-    const recentDirs = sessionDirs.slice(-limit);
-    if (sessionDirs.length > limit) {
-      console.log(`[TestPlanner] ${sessionDirs.length} sessions total — using ${limit} most recent`);
-    }
-
-    const allSessionData: SessionData[] = [];
-    for (const dir of recentDirs) {
-      const data = await this._loadSession(dir);
-      if (data) allSessionData.push(data);
-    }
-
-    if (allSessionData.length === 0) {
-      throw new Error('No valid sessions with steps found');
-    }
-
-    let filtered = allSessionData;
-    let filteredRegistry = registry;
-    if (goal) {
-      const { sessions: goalSessions, registry: goalRegistry } = this._filterByGoal(allSessionData, registry, goal);
-      filtered = goalSessions;
-      filteredRegistry = goalRegistry;
-      if (filtered.length === 0) {
-        console.warn(`[TestPlanner] Goal filter matched nothing — falling back to all sessions`);
-        filtered = allSessionData;
-        filteredRegistry = registry;
-      } else {
-        console.log(`[TestPlanner] Goal filter: ${allSessionData.length} → ${filtered.length} sessions`);
-      }
-    }
+    const { sessions: filtered, registry: filteredRegistry } =
+      this._applyGoalFilter(allSessionData, registry, goal);
 
     const deduped = this._deduplicateSessions(filtered);
     if (deduped.length < filtered.length) {
@@ -183,6 +132,98 @@ export class TestPlanner {
     console.log(`[TestPlanner] ${plan.scenarios.length} scenario(s) planned`);
 
     return plan;
+  }
+
+  private async _prepareGroundedEdgesAndBlocking(
+    registry: ComponentRegistry,
+    sessionsDir: string,
+    sessionId: string | undefined,
+    registryPath: string,
+  ): Promise<void> {
+    // Load adversarial observations (if a probe run produced them) → real `expected`.
+    const observations = await this._loadObservations(sessionsDir, sessionId);
+
+    // Precompute grounded edge cases for every component (deterministic).
+    this._computeGroundedEdges(registry, observations);
+
+    // Load classification report (if present) → know which components are blocking.
+    this.blockingIds = await this._loadBlockingIds(registryPath);
+    if (this.blockingIds.size > 0) {
+      console.log(`[TestPlanner] ${this.blockingIds.size} blocking component(s) excluded (see needs-testid.md)`);
+    }
+    const grounded = [...this.derivedEdges.values()].reduce((n, e) => n + e.length, 0);
+    console.log(`[TestPlanner] ${grounded} grounded edge case(s) derived from DOM/network`);
+  }
+
+  private _computeGroundedEdges(registry: ComponentRegistry, observations: AdversarialObservation[]): void {
+    this.derivedEdges.clear();
+    for (const comp of Object.values(registry.components)) {
+      const edges = deriveEdgeCases(comp);
+      this._applyObservedExpectations(edges, observations);
+      if (edges.length > 0) this.derivedEdges.set(comp.id, edges);
+    }
+  }
+
+  // Override `expected` with observed reality where we probed it.
+  private _applyObservedExpectations(edges: TestEdgeCase[], observations: AdversarialObservation[]): void {
+    for (const e of edges) {
+      const obs = observations.find(
+        (o) => o.componentId === e.component && o.input === (e.input ?? '') && o.edgeType === e.type,
+      );
+      if (obs) {
+        e.expected = obs.expected;
+        e.source = 'network-observed';
+      }
+    }
+  }
+
+  private async _resolveSessionDirs(
+    sessionsDir: string,
+    sessionId: string | undefined,
+    limit: number,
+  ): Promise<string[]> {
+    const sessionDirs = sessionId
+      ? [join(sessionsDir, sessionId)]
+      : await this._listSessions(sessionsDir);
+
+    if (sessionDirs.length === 0) {
+      throw new Error('No sessions found in ' + sessionsDir);
+    }
+
+    const recentDirs = sessionDirs.slice(-limit);
+    if (sessionDirs.length > limit) {
+      console.log(`[TestPlanner] ${sessionDirs.length} sessions total — using ${limit} most recent`);
+    }
+    return recentDirs;
+  }
+
+  private async _loadAllSessions(dirs: string[]): Promise<SessionData[]> {
+    const allSessionData: SessionData[] = [];
+    for (const dir of dirs) {
+      const data = await this._loadSession(dir);
+      if (data) allSessionData.push(data);
+    }
+
+    if (allSessionData.length === 0) {
+      throw new Error('No valid sessions with steps found');
+    }
+    return allSessionData;
+  }
+
+  private _applyGoalFilter(
+    allSessionData: SessionData[],
+    registry: ComponentRegistry,
+    goal: string | undefined,
+  ): { sessions: SessionData[]; registry: ComponentRegistry } {
+    if (!goal) return { sessions: allSessionData, registry };
+
+    const { sessions: goalSessions, registry: goalRegistry } = this._filterByGoal(allSessionData, registry, goal);
+    if (goalSessions.length === 0) {
+      console.warn(`[TestPlanner] Goal filter matched nothing — falling back to all sessions`);
+      return { sessions: allSessionData, registry };
+    }
+    console.log(`[TestPlanner] Goal filter: ${allSessionData.length} → ${goalSessions.length} sessions`);
+    return { sessions: goalSessions, registry: goalRegistry };
   }
 
   private _filterByGoal(
@@ -289,9 +330,9 @@ export class TestPlanner {
     }
 
     const batchPlans: TestPlan[] = [];
-    for (let i = 0; i < batches.length; i++) {
+    for (const [i, batch] of batches.entries()) {
       console.log(`[TestPlanner] Batch ${i + 1}/${batches.length}…`);
-      batchPlans.push(await this._buildPlan(registry, batches[i], goal));
+      batchPlans.push(await this._buildPlan(registry, batch, goal));
     }
 
     return this._mergePlans(batchPlans);
@@ -318,24 +359,25 @@ export class TestPlanner {
   private async _buildPlan(registry: ComponentRegistry, sessions: SessionData[], goal?: string): Promise<TestPlan> {
     const registrySummary = this._summarizeRegistry(registry);
     const sessionsSummary = sessions.map(this._summarizeSession.bind(this));
+    const prompt = this._buildPlanPrompt(registrySummary, sessionsSummary, goal);
 
-    const goalSection = goal
-      ? `\nCOVERAGE GOAL (focus only on this):\n"${goal}"\n\nOnly generate scenarios directly relevant to this goal.\n`
-      : '';
+    try {
+      return await this._runPlanLlm(prompt, goal);
+    } catch (err) {
+      console.warn('[TestPlanner] Claude failed, using deterministic fallback:', (err as Error).message);
+      return this._buildDeterministicPlan(registry, sessions, goal);
+    }
+  }
 
-    // Grounded edge cases for components used in these sessions.
-    const usedComponentIds = new Set(
-      sessions.flatMap((s) => s.steps).map((st) => st.action.element?.testid).filter(Boolean) as string[],
-    );
-    const groundedEdges = [...this.derivedEdges.entries()]
-      .filter(([id]) => !this.blockingIds.has(id))
-      .flatMap(([, edges]) => edges);
-    const groundedSection = groundedEdges.length > 0
-      ? `\nGROUNDED EDGE CASES (derived from real DOM constraints + observed network — USE THESE, do NOT invent your own; copy them verbatim into the relevant scenario's edgeCases):\n${JSON.stringify(groundedEdges, null, 2)}\n`
-      : '';
-    void usedComponentIds;
+  private _buildPlanPrompt(
+    registrySummary: RegistrySummary,
+    sessionsSummary: SessionSummary[],
+    goal?: string,
+  ): string {
+    const goalSection = this._buildGoalSection(goal);
+    const groundedSection = this._buildGroundedSection();
 
-    const prompt = `You are a QA architect planning Cypress e2e tests based on recorded browser sessions and a component registry.
+    return `You are a QA architect planning Cypress e2e tests based on recorded browser sessions and a component registry.
 ${goalSection}
 COMPONENT REGISTRY SUMMARY:
 ${JSON.stringify(registrySummary, null, 2)}
@@ -345,7 +387,26 @@ ${JSON.stringify(sessionsSummary, null, 2)}
 ${groundedSection}
 
 Your task: produce a${goal ? ' focused' : ' comprehensive'} test plan.
+${this._buildPlanInstructions()}`;
+  }
 
+  private _buildGoalSection(goal?: string): string {
+    return goal
+      ? `\nCOVERAGE GOAL (focus only on this):\n"${goal}"\n\nOnly generate scenarios directly relevant to this goal.\n`
+      : '';
+  }
+
+  private _buildGroundedSection(): string {
+    const groundedEdges = [...this.derivedEdges.entries()]
+      .filter(([id]) => !this.blockingIds.has(id))
+      .flatMap(([, edges]) => edges);
+    return groundedEdges.length > 0
+      ? `\nGROUNDED EDGE CASES (derived from real DOM constraints + observed network — USE THESE, do NOT invent your own; copy them verbatim into the relevant scenario's edgeCases):\n${JSON.stringify(groundedEdges, null, 2)}\n`
+      : '';
+  }
+
+  private _buildPlanInstructions(): string {
+    return `
 For each distinct user flow (page + scenario), create a TestScenario entry:
 1. Group steps from the same page into one scenario
 2. If a page has multiple distinct flows, create separate scenarios
@@ -386,21 +447,18 @@ Return ONLY a valid JSON object matching this structure:
 }
 
 No explanation, no markdown fences. Return only the JSON.`;
+  }
 
-    try {
-      const text = await runLlm(prompt);
-      const match = text.match(/\{[\s\S]*\}/);
-      if (!match) throw new Error('No JSON found in response');
+  private async _runPlanLlm(prompt: string, goal?: string): Promise<TestPlan> {
+    const text = await runLlm(prompt);
+    const match = text.match(/\{[\s\S]*\}/);
+    if (!match) throw new Error('No JSON found in response');
 
-      const plan = JSON.parse(match[0]) as TestPlan;
-      plan.generatedAt = new Date().toISOString();
-      if (goal) plan.goal = goal;
-      plan.summary = this._computeSummary(plan.scenarios);
-      return plan;
-    } catch (err) {
-      console.warn('[TestPlanner] Claude failed, using deterministic fallback:', (err as Error).message);
-      return this._buildDeterministicPlan(registry, sessions, goal);
-    }
+    const plan = JSON.parse(match[0]) as TestPlan;
+    plan.generatedAt = new Date().toISOString();
+    if (goal) plan.goal = goal;
+    plan.summary = this._computeSummary(plan.scenarios);
+    return plan;
   }
 
   private _buildDeterministicPlan(registry: ComponentRegistry, sessions: SessionData[], goal?: string): TestPlan {
@@ -453,7 +511,7 @@ No explanation, no markdown fences. Return only the JSON.`;
     };
   }
 
-  private _summarizeRegistry(registry: ComponentRegistry) {
+  private _summarizeRegistry(registry: ComponentRegistry): RegistrySummary {
     return {
       totalComponents: Object.keys(registry.components).length,
       pages: [...new Set(Object.values(registry.components).flatMap((c) => c.pages))],
@@ -463,13 +521,20 @@ No explanation, no markdown fences. Return only the JSON.`;
         pages: c.pages,
         confidence: c.confidence,
         hasNetwork: c.actions.some((a) => !!a.network),
-        networkActions: c.actions.filter((a) => a.network).map((a) => ({ method: a.network!.method, url: a.network!.urlPattern })),
+        networkActions: this._summarizeNetworkActions(c.actions),
         states: Object.keys(c.states).filter((k) => c.states[k as keyof typeof c.states]),
       })),
     };
   }
 
-  private _summarizeSession(session: SessionData) {
+  private _summarizeNetworkActions(actions: ComponentRecord['actions']): Array<{ method: string; url: string }> {
+    return actions
+      .map((a) => a.network)
+      .filter((n): n is NonNullable<typeof n> => !!n)
+      .map((n) => ({ method: n.method, url: n.urlPattern }));
+  }
+
+  private _summarizeSession(session: SessionData): SessionSummary {
     const pages = [...new Set(session.steps.map((s) => {
       try { return new URL(s.url.startsWith('http') ? s.url : `http://x${s.url}`).pathname; }
       catch { return s.url; }
@@ -477,22 +542,27 @@ No explanation, no markdown fences. Return only the JSON.`;
 
     const interactions = session.steps
       .filter((s) => ['click', 'fill', 'select', 'hover'].includes(s.action.type))
-      .map((s) => {
-        const el = s.action.element;
-        const selector = el?.testid
-          ? `[data-testid="${el.testid}"]`
-          : el?.ariaRole && el?.ariaName ? `${el.ariaRole}["${el.ariaName}"]` : el?.text ?? '?';
-        return {
-          step: s.stepId,
-          type: s.action.type,
-          selector,
-          value: s.action.value ?? undefined,
-          hasNetworkEffect: !!(s.after?.networkFile),
-          hasStorageChange: !!(s.after?.storageDiff && Object.keys(s.after.storageDiff.added ?? {}).length > 0),
-        };
-      });
+      .map((s) => this._summarizeInteraction(s));
 
     return { sessionId: session.sessionId, task: session.task, pages, interactions };
+  }
+
+  private _summarizeInteraction(s: StepRecord): SessionSummary['interactions'][number] {
+    return {
+      step: s.stepId,
+      type: s.action.type,
+      selector: this._resolveInteractionSelector(s.action.element),
+      value: s.action.value ?? undefined,
+      hasNetworkEffect: !!(s.after?.networkFile),
+      hasStorageChange: !!(s.after?.storageDiff && Object.keys(s.after.storageDiff.added ?? {}).length > 0),
+    };
+  }
+
+  private _resolveInteractionSelector(el: ActionElement | undefined): string {
+    if (!el) return '?';
+    if (el.testid) return `[data-testid="${el.testid}"]`;
+    if (el.ariaRole && el.ariaName) return `${el.ariaRole}["${el.ariaName}"]`;
+    return el.text ?? '?';
   }
 
   private _groupStepsByPage(steps: StepRecord[]): Record<string, StepRecord[]> {
@@ -520,9 +590,10 @@ No explanation, no markdown fences. Return only the JSON.`;
 
   private _inferScenarioName(steps: StepRecord[]): string {
     const actionSteps = steps.filter((s) => s.action.type !== 'navigate');
-    if (actionSteps.length === 0) return 'Main Flow';
-    const first = actionSteps[0].action.description ?? 'Main Flow';
-    return first.length > 40 ? first.slice(0, 40) : first;
+    const first = actionSteps[0];
+    if (!first) return 'Main Flow';
+    const description = first.action.description ?? 'Main Flow';
+    return description.length > 40 ? description.slice(0, 40) : description;
   }
 
   private _toKebab(str: string): string {
@@ -585,30 +656,43 @@ No explanation, no markdown fences. Return only the JSON.`;
     const stepsDir = join(sessionDir, 'steps');
     if (!existsSync(stepsDir)) return null;
 
-    const metaPath = join(sessionDir, 'session-meta.json');
-    let sessionId = sessionDir.split(/[\\/]/).pop() ?? 'unknown';
-    let task = '';
-
-    if (existsSync(metaPath)) {
-      try {
-        const meta = JSON.parse(await readFile(metaPath, 'utf-8')) as SessionMeta;
-        sessionId = meta.sessionId;
-        task = meta.task;
-      } catch { /* keep defaults */ }
-    }
-
-    const files = (await readdir(stepsDir)).filter((f) => f.endsWith('.json')).sort();
-    const steps: StepRecord[] = [];
-    for (const file of files) {
-      try {
-        const raw = await readFile(join(stepsDir, file), 'utf-8');
-        const step = JSON.parse(raw) as StepRecord;
-        if (step.status === 'complete') steps.push(step);
-      } catch { /* skip corrupt */ }
-    }
+    const { sessionId, task } = await this._loadSessionMeta(sessionDir);
+    const steps = await this._loadSessionSteps(stepsDir);
 
     if (steps.length === 0) return null;
     return { sessionId, task, steps };
+  }
+
+  private async _loadSessionMeta(sessionDir: string): Promise<{ sessionId: string; task: string }> {
+    const metaPath = join(sessionDir, 'session-meta.json');
+    const fallbackId = sessionDir.split(/[\\/]/).pop() ?? 'unknown';
+    if (!existsSync(metaPath)) return { sessionId: fallbackId, task: '' };
+
+    try {
+      const meta = JSON.parse(await readFile(metaPath, 'utf-8')) as SessionMeta;
+      return { sessionId: meta.sessionId, task: meta.task };
+    } catch {
+      return { sessionId: fallbackId, task: '' };
+    }
+  }
+
+  private async _loadSessionSteps(stepsDir: string): Promise<StepRecord[]> {
+    const files = (await readdir(stepsDir)).filter((f) => f.endsWith('.json')).sort();
+    const steps: StepRecord[] = [];
+    for (const file of files) {
+      const step = await this._loadStepFile(stepsDir, file);
+      if (step && step.status === 'complete') steps.push(step);
+    }
+    return steps;
+  }
+
+  private async _loadStepFile(stepsDir: string, file: string): Promise<StepRecord | null> {
+    try {
+      const raw = await readFile(join(stepsDir, file), 'utf-8');
+      return JSON.parse(raw) as StepRecord;
+    } catch {
+      return null;
+    }
   }
 }
 
@@ -616,6 +700,34 @@ interface SessionData {
   sessionId: string;
   task: string;
   steps: StepRecord[];
+}
+
+interface RegistrySummary {
+  totalComponents: number;
+  pages: string[];
+  components: Array<{
+    id: string;
+    label: string;
+    pages: string[];
+    confidence: ComponentRecord['confidence'];
+    hasNetwork: boolean;
+    networkActions: Array<{ method: string; url: string }>;
+    states: string[];
+  }>;
+}
+
+interface SessionSummary {
+  sessionId: string;
+  task: string;
+  pages: string[];
+  interactions: Array<{
+    step: string;
+    type: string;
+    selector: string;
+    value: string | undefined;
+    hasNetworkEffect: boolean;
+    hasStorageChange: boolean;
+  }>;
 }
 
 // ─── CLI ──────────────────────────────────────────────────────────────────────
@@ -641,5 +753,9 @@ if (isMain) {
   if (goalArg) console.log('[TestPlanner] Goal:    ', goalArg);
   console.log('[TestPlanner] Output:  ', outputPath, '\n');
 
-  await new TestPlanner().plan(sessionsDir, registryPath, outputPath, sessionArg, limit, goalArg);
+  await new TestPlanner().plan(sessionsDir, registryPath, outputPath, {
+    sessionId: sessionArg,
+    limit,
+    goal: goalArg,
+  });
 }

@@ -19,12 +19,13 @@ if (arg) {
     process.exit(1);
   }
   const sessions = readdirSync(sessionsDir).sort();
-  if (sessions.length === 0) {
+  const latest = sessions[sessions.length - 1];
+  if (sessions.length === 0 || !latest) {
     console.error('No sessions found in', sessionsDir);
     process.exit(1);
   }
-  sessionDir = join(sessionsDir, sessions[sessions.length - 1]);
-  console.log(`No session specified — using latest: ${sessions[sessions.length - 1]}`);
+  sessionDir = join(sessionsDir, latest);
+  console.log(`No session specified — using latest: ${latest}`);
 }
 
 console.log(`[Adversarial] Session: ${sessionDir}\n`);
