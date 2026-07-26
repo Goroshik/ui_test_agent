@@ -2,6 +2,7 @@ import OpenAI from 'openai';
 import { readFile, writeFile, mkdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
+import { normalizePagePath } from '../../url-path.js';
 import type {
   StepRecord,
   AriaComponent,
@@ -257,11 +258,7 @@ export class IdentityResolutionAgent {
    * but never interacted with (e.g. navbar links not clicked).
    */
   private _resolvePagePath(url: string): string {
-    try {
-      return new URL(url.startsWith('http') ? url : `http://x${url}`).pathname;
-    } catch {
-      return url;
-    }
+    return normalizePagePath(url);
   }
 
   private _buildObservedRecord(comp: AriaComponent): ComponentRecord {
@@ -562,14 +559,9 @@ Return JSON (only, no explanation):
   }
 
   private _generateId(anchor: AnchorEntry): string {
-    let pageSlug: string;
-    try {
-      const url = new URL(anchor.url.startsWith('http') ? anchor.url : `http://x${anchor.url}`);
-      pageSlug = this._toKebab(url.pathname.replace(/^\//, '') || 'home');
-    } catch {
-      pageSlug = 'page';
-    }
-
+    // Normalised, so the same control on /users/1 and /users/2 gets one ID and
+    // the registry reinforces a single record instead of accruing near-duplicates.
+    const pageSlug = this._toKebab(normalizePagePath(anchor.url).replace(/^\//, '') || 'home');
     const componentSlug = this._resolveComponentSlug(anchor);
     return `${pageSlug}__${componentSlug}`.slice(0, 80);
   }
