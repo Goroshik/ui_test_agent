@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type OpenAI from 'openai';
-import { IdentityResolutionAgent } from './identity-resolution-agent.js';
+import { IdentityResolutionAgent, type LlmResolution } from './identity-resolution-agent.js';
 import type {
   AriaComponent,
   ComponentAction,
@@ -282,48 +282,81 @@ describe('IdentityResolutionAgent._resolvePreferredSelector', () => {
 });
 
 describe('IdentityResolutionAgent._parseLlmResolveResponse', () => {
-  const parse = (text: string): { ariaIndex: number | null; domIndex: number | null } =>
+  const parse = (text: string): LlmResolution =>
     makeAgent()['_parseLlmResolveResponse'](text);
 
   it('reads both indices out of a clean object', () => {
     expect(
       parse('{"ariaMatch":{"index":1,"confidence":"high"},"domMatch":{"index":2,"confidence":"high"}}'),
-    ).toEqual({ ariaIndex: 1, domIndex: 2 });
+    ).toEqual({ ariaIndex: 1, domIndex: 2, confidence: 'medium' });
   });
 
   it('extracts the object from surrounding prose', () => {
-    expect(parse('Result:\n{"ariaMatch":{"index":0,"confidence":"x"}}\ndone')).toEqual({
+    expect(parse('Result:\n{"ariaMatch":{"index":0,"confidence":"medium"}}\ndone')).toEqual({
       ariaIndex: 0,
       domIndex: null,
+      confidence: 'medium',
     });
   });
 
   it('returns nulls when no object is present', () => {
-    expect(parse('nothing here')).toEqual({ ariaIndex: null, domIndex: null });
+    expect(parse('nothing here')).toEqual({ ariaIndex: null, domIndex: null, confidence: 'low' });
   });
 
   it('returns nulls for empty input', () => {
-    expect(parse('')).toEqual({ ariaIndex: null, domIndex: null });
+    expect(parse('')).toEqual({ ariaIndex: null, domIndex: null, confidence: 'low' });
   });
 
   it('nulls a missing domMatch', () => {
-    expect(parse('{"ariaMatch":{"index":3,"confidence":"h"}}')).toEqual({
+    expect(parse('{"ariaMatch":{"index":3,"confidence":"low"}}')).toEqual({
       ariaIndex: 3,
       domIndex: null,
+      confidence: 'low',
     });
   });
 
   it('nulls a missing ariaMatch', () => {
-    expect(parse('{"domMatch":{"index":4,"confidence":"h"}}')).toEqual({
+    expect(parse('{"domMatch":{"index":4,"confidence":"low"}}')).toEqual({
       ariaIndex: null,
       domIndex: 4,
+      confidence: 'low',
     });
   });
 
   it('preserves index 0 rather than coercing it to null', () => {
-    expect(parse('{"ariaMatch":{"index":0,"confidence":"h"},"domMatch":{"index":0,"confidence":"h"}}')).toEqual(
-      { ariaIndex: 0, domIndex: 0 },
+    expect(parse('{"ariaMatch":{"index":0,"confidence":"low"},"domMatch":{"index":0,"confidence":"low"}}')).toEqual(
+      { ariaIndex: 0, domIndex: 0, confidence: 'low' },
     );
+  });
+
+  it('rejects a negative index rather than indexing from the end', () => {
+    expect(parse('{"ariaMatch":{"index":-1,"confidence":"high"}}').ariaIndex).toBeNull();
+  });
+
+  it('rejects a fractional index', () => {
+    expect(parse('{"ariaMatch":{"index":1.5,"confidence":"high"}}').ariaIndex).toBeNull();
+  });
+
+  it('rejects a non-numeric index', () => {
+    expect(parse('{"ariaMatch":{"index":"1","confidence":"high"}}').ariaIndex).toBeNull();
+  });
+
+  it('takes the stronger of the two reported confidences', () => {
+    expect(
+      parse('{"ariaMatch":{"index":0,"confidence":"low"},"domMatch":{"index":0,"confidence":"medium"}}').confidence,
+    ).toBe('medium');
+  });
+
+  it('caps an LLM match at medium — high is reserved for deterministic hits', () => {
+    expect(parse('{"ariaMatch":{"index":0,"confidence":"high"}}').confidence).toBe('medium');
+  });
+
+  it('treats an unrecognised confidence as low', () => {
+    expect(parse('{"ariaMatch":{"index":0,"confidence":"pretty sure"}}').confidence).toBe('low');
+  });
+
+  it('treats a missing confidence as low', () => {
+    expect(parse('{"ariaMatch":{"index":0}}').confidence).toBe('low');
   });
 
   it('throws on a malformed object body', () => {
@@ -336,14 +369,14 @@ describe('IdentityResolutionAgent._llmResolve', () => {
     agent: IdentityResolutionAgent,
     ariaList: AriaComponent[],
     domList: DomComponent[],
-  ): Promise<{ ariaIndex: number | null; domIndex: number | null }> =>
+  ): Promise<LlmResolution> =>
     agent['_llmResolve'](anchor(), ariaList, domList);
 
   it('short-circuits without calling the LLM when both lists are empty', async () => {
     const create = vi.fn(() => Promise.resolve({ choices: [] }));
     const result = await call(makeAgent(create), [], []);
 
-    expect(result).toEqual({ ariaIndex: null, domIndex: null });
+    expect(result).toEqual({ ariaIndex: null, domIndex: null, confidence: 'low' });
     expect(create).not.toHaveBeenCalled();
   });
 
@@ -356,6 +389,7 @@ describe('IdentityResolutionAgent._llmResolve', () => {
     await expect(call(makeAgent(create), [aria(), aria()], [])).resolves.toEqual({
       ariaIndex: 1,
       domIndex: null,
+      confidence: 'medium',
     });
   });
 
@@ -364,6 +398,7 @@ describe('IdentityResolutionAgent._llmResolve', () => {
     await expect(call(makeAgent(create), [aria()], [])).resolves.toEqual({
       ariaIndex: null,
       domIndex: null,
+      confidence: 'low',
     });
   });
 
@@ -372,6 +407,7 @@ describe('IdentityResolutionAgent._llmResolve', () => {
     await expect(call(makeAgent(create), [aria()], [])).resolves.toEqual({
       ariaIndex: null,
       domIndex: null,
+      confidence: 'low',
     });
   });
 
@@ -382,6 +418,7 @@ describe('IdentityResolutionAgent._llmResolve', () => {
     await expect(call(makeAgent(create), [], [dom()])).resolves.toEqual({
       ariaIndex: null,
       domIndex: 0,
+      confidence: 'low',
     });
   });
 });
@@ -391,7 +428,7 @@ describe('IdentityResolutionAgent._resolveViaLlmIfAmbiguous', () => {
     agent: IdentityResolutionAgent,
     candidates: { stepAria: AriaComponent[]; stepDom: DomComponent[] },
     deterministic: { aria: AriaComponent | null; dom: DomComponent | null; confidence: Confidence },
-  ): Promise<{ aria: AriaComponent | null; dom: DomComponent | null }> =>
+  ): Promise<{ aria: AriaComponent | null; dom: DomComponent | null; confidence: Confidence }> =>
     agent['_resolveViaLlmIfAmbiguous'](anchor(), candidates, deterministic);
 
   it('keeps a high-confidence deterministic result without asking the LLM', async () => {
@@ -404,7 +441,7 @@ describe('IdentityResolutionAgent._resolveViaLlmIfAmbiguous', () => {
       { aria: detAria, dom: null, confidence: 'high' },
     );
 
-    expect(result).toEqual({ aria: detAria, dom: null });
+    expect(result).toEqual({ aria: detAria, dom: null, confidence: 'high' });
     expect(create).not.toHaveBeenCalled();
   });
 
@@ -426,7 +463,7 @@ describe('IdentityResolutionAgent._resolveViaLlmIfAmbiguous', () => {
       { aria: null, dom: null, confidence: 'low' },
     );
 
-    expect(result).toEqual({ aria: null, dom: null });
+    expect(result).toEqual({ aria: null, dom: null, confidence: 'low' });
     expect(create).not.toHaveBeenCalled();
   });
 
@@ -446,6 +483,54 @@ describe('IdentityResolutionAgent._resolveViaLlmIfAmbiguous', () => {
 
     expect(result.aria).toBe(chosen);
     expect(create).toHaveBeenCalledOnce();
+  });
+
+  it('lifts confidence off the floor when the LLM resolved the match', async () => {
+    const create = vi.fn(() =>
+      Promise.resolve({
+        choices: [{ message: { content: '{"ariaMatch":{"index":0,"confidence":"high"}}' } }],
+      }),
+    );
+
+    const result = await run(
+      makeAgent(create),
+      { stepAria: [aria()], stepDom: [] },
+      { aria: null, dom: null, confidence: 'low' },
+    );
+
+    expect(result.confidence).toBe('medium');
+  });
+
+  it('leaves confidence low when the LLM reported low confidence', async () => {
+    const create = vi.fn(() =>
+      Promise.resolve({
+        choices: [{ message: { content: '{"ariaMatch":{"index":0,"confidence":"low"}}' } }],
+      }),
+    );
+
+    const result = await run(
+      makeAgent(create),
+      { stepAria: [aria()], stepDom: [] },
+      { aria: null, dom: null, confidence: 'low' },
+    );
+
+    expect(result.confidence).toBe('low');
+  });
+
+  it('leaves confidence low when the LLM resolved nothing usable', async () => {
+    const create = vi.fn(() =>
+      Promise.resolve({
+        choices: [{ message: { content: '{"ariaMatch":{"index":99,"confidence":"high"}}' } }],
+      }),
+    );
+
+    const result = await run(
+      makeAgent(create),
+      { stepAria: [aria()], stepDom: [] },
+      { aria: null, dom: null, confidence: 'low' },
+    );
+
+    expect(result.confidence).toBe('low');
   });
 
   it('falls back to the deterministic value when the LLM index is out of range', async () => {
