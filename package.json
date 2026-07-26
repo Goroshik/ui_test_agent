@@ -15,10 +15,11 @@
     "lint": "eslint visual-bot",
     "test:unit": "vitest run",
     "coverage": "vitest run --coverage",
-    "crap": "crap4ts -c coverage/coverage-final.json",
-    "crap:changed": "crap4ts -c coverage/coverage-final.json --changed-since origin/master",
+    "crap:normalize": "node scripts/normalize-coverage-paths.cjs coverage/coverage-final.json coverage/coverage-final.norm.json",
+	"crap": "yarn crap:normalize && crap4ts -c coverage/coverage-final.norm.json",
+	"crap:changed": "yarn crap:normalize && crap4ts -c coverage/coverage-final.norm.json --changed-since origin/master",
+	"gate": "node scripts/gate.cjs",
     "mutation": "stryker run",
-    "gate": "yarn typecheck && yarn lint && yarn coverage && yarn crap && yarn mutation",
     "gate:quick": "yarn typecheck && yarn lint"
   },
   "dependencies": {
