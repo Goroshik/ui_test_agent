@@ -8,10 +8,15 @@ export interface VerificationResult {
   reason: string;
 }
 
-const SCREENSHOTS_INCOMING = resolve(process.cwd(), 'screenshots', 'incoming');
+const SNAPSHOTS_INCOMING = resolve(process.cwd(), 'screenshots', 'snapshots-incoming');
 
-const SYSTEM_PROMPT = `You are a task completion verifier. You will be shown a screenshot of a browser and a task/plan description.
-Your job is to determine whether the task was successfully completed based on what you see in the screenshot.
+/** ARIA snapshots of a busy page run long; trim before paying per token. */
+const MAX_SNAPSHOT_CHARS = parseInt(process.env.VERIFICATION_SNAPSHOT_MAX_CHARS || '20000', 10);
+
+const SYSTEM_PROMPT = `You are a task completion verifier. You will be given the accessibility (ARIA) snapshot of a browser page and a task/plan description.
+Your job is to determine whether the task was successfully completed based on what the snapshot shows.
+
+The snapshot is the page's accessibility tree: the page URL plus roles, labels, headings, form values, links and buttons. Judge by what it contains — the expected URL, a success banner, the expected row in a table — and by what it lacks: a validation error, a still-open dialog, a form that clearly never submitted.
 
 IMPORTANT: Always respond in Russian.
 
@@ -23,6 +28,14 @@ Respond with a JSON object (no markdown fences) in exactly this format:
 
 Be strict: if there is any doubt that the task was not fully completed, return success: false.`;
 
+/** Keeps the head and tail of an over-long snapshot — alerts and dialogs land at either end. */
+export function truncateSnapshot(snapshot: string, maxChars = MAX_SNAPSHOT_CHARS): string {
+  if (snapshot.length <= maxChars) return snapshot;
+  const half = Math.floor(maxChars / 2);
+  const omitted = snapshot.length - half * 2;
+  return `${snapshot.slice(0, half)}\n\n…[${omitted} chars omitted]…\n\n${snapshot.slice(-half)}`;
+}
+
 export class TaskVerificationAgent {
   private client: OpenAI;
   private model: string;
@@ -32,50 +45,25 @@ export class TaskVerificationAgent {
     this.model = model;
   }
 
-  async verify(task: string, screenshotPath?: string | null): Promise<VerificationResult> {
-    const imgPath = screenshotPath ?? (await this._findLastScreenshot());
-    if (!imgPath || !existsSync(imgPath)) {
-      return { success: false, reason: 'Скриншот не найден — невозможно проверить результат' };
+  async verify(task: string, snapshot?: string | null): Promise<VerificationResult> {
+    const text = snapshot?.trim() || (await this._readLastSnapshot());
+    if (!text) {
+      return { success: false, reason: 'ARIA-снапшот не найден — невозможно проверить результат' };
     }
 
-    const dataUrl = await this._loadImageAsDataUrl(imgPath);
-    if (!dataUrl) {
-      return { success: false, reason: 'Не удалось прочитать файл скриншота' };
-    }
-
-    console.log(`\n[Verifier] Checking task completion using screenshot: ${imgPath}`);
-    const raw = await this._requestVerification(task, dataUrl);
+    console.log(`\n[Verifier] Checking task completion using ARIA snapshot (${text.length} chars)`);
+    const raw = await this._requestVerification(task, truncateSnapshot(text));
     return this._parseVerificationResponse(raw);
   }
 
-  private async _loadImageAsDataUrl(imgPath: string): Promise<string | null> {
-    try {
-      const buf = await readFile(imgPath);
-      const base64 = buf.toString('base64');
-      const ext = imgPath.endsWith('.jpg') || imgPath.endsWith('.jpeg') ? 'jpeg' : 'png';
-      return `data:image/${ext};base64,${base64}`;
-    } catch {
-      return null;
-    }
-  }
-
-  private async _requestVerification(task: string, dataUrl: string): Promise<string> {
+  private async _requestVerification(task: string, snapshot: string): Promise<string> {
     const response = await this.client.chat.completions.create({
       model: this.model,
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
         {
           role: 'user',
-          content: [
-            {
-              type: 'text',
-              text: `Task/Plan:\n${task}\n\nLook at the screenshot and determine if the task was fully completed.`,
-            },
-            {
-              type: 'image_url',
-              image_url: { url: dataUrl },
-            },
-          ],
+          content: `Task/Plan:\n${task}\n\nPage accessibility snapshot:\n${snapshot}\n\nDetermine whether the task was fully completed.`,
         },
       ],
       temperature: 0.1,
@@ -99,18 +87,29 @@ export class TaskVerificationAgent {
     }
   }
 
-  /** Finds the most recently modified screenshot in the incoming directory. */
-  private async _findLastScreenshot(): Promise<string | null> {
-    if (!existsSync(SCREENSHOTS_INCOMING)) return null;
+  /** Fallback when the agent held no in-memory snapshot: newest saved snapshot on disk. */
+  private async _readLastSnapshot(): Promise<string> {
+    const path = await this._findLastSnapshotFile();
+    if (!path) return '';
+    try {
+      return (await readFile(path, 'utf-8')).trim();
+    } catch {
+      return '';
+    }
+  }
 
-    const files = await readdir(SCREENSHOTS_INCOMING);
-    const imageFiles = files.filter((f) => /\.(png|jpg|jpeg|webp)$/i.test(f));
-    if (imageFiles.length === 0) return null;
+  /** Finds the most recently modified snapshot in the incoming directory. */
+  private async _findLastSnapshotFile(): Promise<string | null> {
+    if (!existsSync(SNAPSHOTS_INCOMING)) return null;
+
+    const files = await readdir(SNAPSHOTS_INCOMING);
+    const textFiles = files.filter((f) => f.toLowerCase().endsWith('.txt'));
+    if (textFiles.length === 0) return null;
 
     // Sort by mtime descending, pick the newest
     const withStats = await Promise.all(
-      imageFiles.map(async (f) => {
-        const fullPath = resolve(SCREENSHOTS_INCOMING, f);
+      textFiles.map(async (f) => {
+        const fullPath = resolve(SNAPSHOTS_INCOMING, f);
         const s = await stat(fullPath);
         return { path: fullPath, mtime: s.mtimeMs };
       }),

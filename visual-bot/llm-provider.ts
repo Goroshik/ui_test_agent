@@ -9,13 +9,36 @@ export interface LlmProvider {
   model: string;
 }
 
-const DEFAULT_OPENROUTER_MODEL = 'anthropic/claude-haiku-4.5';
+/**
+ * Cheapest DeepSeek model on OpenRouter as of 2026-07-26: $0.09 / 1M input
+ * tokens, $0.18 / 1M output tokens, 1M-token context. DeepSeek reprices often —
+ * re-check https://openrouter.ai/deepseek before bumping this.
+ *
+ * Text-only, which is fine everywhere except one optional path: the browser
+ * agent and the task verifier both work off ARIA snapshots, so the only caller
+ * that needs vision is the screenshot diff (SCREENSHOT_ANALYSIS_ENABLED).
+ */
+export const DEFAULT_OPENROUTER_MODEL = 'deepseek/deepseek-v4-flash';
 
+/** Cloud by default — running the bot must not require a local runtime. */
+const DEFAULT_PROVIDER: ProviderKind = 'openrouter';
+
+function parseProviderKind(raw: string | undefined): ProviderKind | null {
+  const value = raw?.trim().toLowerCase();
+  if (value === 'openrouter') return 'openrouter';
+  if (value === 'ollama') return 'ollama';
+  return null;
+}
+
+/** Per-role `<ROLE>_PROVIDER` wins over the global `LLM_PROVIDER`, which wins over the default. */
 function readProviderKind(role: Role): ProviderKind {
-  const raw = process.env[`${role.toUpperCase()}_PROVIDER`]?.toLowerCase();
-  if (raw === 'openrouter') return 'openrouter';
-  if (raw === 'ollama') return 'ollama';
-  return role === 'coding' ? 'openrouter' : 'ollama';
+  const roleKind = parseProviderKind(process.env[`${role.toUpperCase()}_PROVIDER`]);
+  return roleKind ?? parseProviderKind(process.env.LLM_PROVIDER) ?? DEFAULT_PROVIDER;
+}
+
+/** True when any role still runs against a local Ollama (model load/unload only applies there). */
+export function usesLocalRuntime(providers: readonly LlmProvider[]): boolean {
+  return providers.some((provider) => provider.kind === 'ollama');
 }
 
 const OLLAMA_MODEL_READERS: Record<Role, () => string> = {
