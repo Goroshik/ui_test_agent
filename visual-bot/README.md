@@ -35,17 +35,28 @@ OPENROUTER_API_KEY=sk-or-...
 
 The default model is `deepseek/deepseek-v4-flash` — the cheapest DeepSeek on
 OpenRouter as of 2026-07-26 ($0.09 / 1M input tokens, $0.18 / 1M output tokens,
-1M-token context). It is **text-only**: the `main` and `analyzer` roles send
-screenshots, so either point them at a vision-capable model…
+1M-token context).
+
+It is **text-only**, which is fine for `main`, `planner` and `coding`: the
+browser agent navigates off ARIA snapshots (`browser_snapshot`) and never sends
+a screenshot to the model — captured images go to disk only. Only the
+`analyzer` role sends images, in two places:
+
+| Where | How often | Toggle |
+|---|---|---|
+| `TaskVerificationAgent` — did the task succeed? | once per run | `VERIFICATION_ENABLED` |
+| `VisualDiff` — screenshot vs baseline | once per changed screenshot | `SCREENSHOT_ANALYSIS_ENABLED` |
+
+So either give that one role a vision-capable model…
 
 ```env
-MAIN_MODEL=qwen/qwen3-vl-235b-a22b-instruct
 ANALYZER_MODEL=qwen/qwen3-vl-235b-a22b-instruct
 ```
 
-…or turn the image paths off and rely on ARIA snapshots
-(`SCREENSHOTS_ENABLED=false`, `SCREENSHOT_ANALYSIS_ENABLED=false`,
-`VERIFICATION_ENABLED=false`).
+…or turn those two off and rely on the ARIA snapshot diff
+(`SNAPSHOT_ANALYSIS_ENABLED`), which covers the same ground on text and stays on
+DeepSeek. Note that the component registry — and therefore the generated Cypress
+tests — is built from ARIA/DOM/network only; no pixels feed into it either way.
 
 To move a role — or everything — back to a local Ollama:
 
