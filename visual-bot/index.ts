@@ -6,7 +6,7 @@ config({ path: resolve(dirname(fileURLToPath(import.meta.url)), '..', '.env') })
 import { readdir, rm } from 'fs/promises';
 import { existsSync } from 'fs';
 import { resolveModel } from './utils.js';
-import { createProvider } from './llm-provider.js';
+import { createProvider, usesLocalRuntime } from './llm-provider.js';
 import { OllamaModelManager } from './ollama-model-manager.js';
 import { Agent } from './agents/main/agent.js';
 import { runAnalysisPipeline } from './run-analysis-pipeline.js';
@@ -109,9 +109,13 @@ if (process.stdin.isTTY) {
   console.log('Tip: press "s" to stop the agent after the current step.\n');
 }
 
-// Main + planner stay on LM Studio (local browser execution).
-const { client } = createProvider('main');
-// Analyzer pipeline (snapshot compare, pipeline runner, post-run) can run on a cloud provider.
+// Every role resolves its own provider: OpenRouter by default, local Ollama when
+// LLM_PROVIDER / <ROLE>_PROVIDER opts in.
+const main = createProvider('main');
+const { client } = main;
+// Planner + memory analysis.
+const planner = createProvider('planner');
+// Analyzer pipeline (snapshot compare, pipeline runner, post-run, task verification).
 const analyzer = createProvider('analyzer');
 
 await connectDB();
@@ -126,17 +130,22 @@ const runId = new Date()
 const logger = new RunLogger(runId, mongoRunId ?? undefined);
 await logger.init(userTask);
 attachLogger(client as Parameters<typeof attachLogger>[0], logger, 'LLM');
+if (planner.client !== client) {
+  attachLogger(planner.client as Parameters<typeof attachLogger>[0], logger, 'LLM-planner');
+}
 if (analyzer.client !== client) {
   attachLogger(analyzer.client as Parameters<typeof attachLogger>[0], logger, 'LLM-analyzer');
 }
 
 try {
-  const mm = new OllamaModelManager();
+  // Load/unload only matters for a local Ollama; a cloud-only run skips it entirely.
+  const mm = new OllamaModelManager(usesLocalRuntime([main, planner, analyzer]));
 
-  // Model roles — each phase uses a dedicated model; if not configured, falls back to resolveModel
-  const plannerModel = process.env.OLLAMA_PLANNER_MODEL;
-  const mainModel = process.env.OLLAMA_MAIN_MODEL || process.env.OLLAMA_MODEL;
-  const validatorModel = process.env.OLLAMA_VALIDATOR_MODEL;
+  // Model roles — each phase uses its provider's model; empty (local, unpinned)
+  // falls back to resolveModel probing whatever Ollama has loaded.
+  const plannerModel = planner.model || undefined;
+  const mainModel = main.model || undefined;
+  const validatorModel = analyzer.model || undefined;
 
   const plannerEnabled = process.env.PLANNER_ENABLED !== 'false';
   const maxRetries = parseInt(process.env.MAX_RETRIES || '2', 10);
@@ -147,8 +156,8 @@ try {
   let plan: string;
   if (plannerEnabled) {
     plan = await mm.withModel(plannerModel, async () => {
-      const memoryAnalysis = await new MemoryAnalysisAgent(client, plannerModel).analyze(userTask);
-      return new PlannerAgent(client, plannerModel).plan(userTask, memoryAnalysis);
+      const memoryAnalysis = await new MemoryAnalysisAgent(planner.client, plannerModel).analyze(userTask);
+      return new PlannerAgent(planner.client, plannerModel).plan(userTask, memoryAnalysis);
     });
   } else {
     plan = userTask;
@@ -174,7 +183,7 @@ try {
 
     // 4. Verify task completion BEFORE running heavy analysis pipeline
     const verifyResult = await verifyAndDecideRetry({
-      verificationEnabled, validatorModel, client, mm, plan, agent, attempt, maxRetries,
+      verificationEnabled, validatorModel, client: analyzer.client, mm, plan, agent, attempt, maxRetries,
     });
     taskSucceeded = verifyResult.taskSucceeded;
     lastFailReason = verifyResult.lastFailReason;

@@ -3,18 +3,20 @@
  * - load(name)   → POST /api/generate {model, keep_alive: KEEP_ALIVE}  (no prompt → just loads)
  * - unload(name) → POST /api/generate {model, keep_alive: 0}
  *
- * Controlled by MODEL_SWITCHING_ENABLED env var (default: enabled).
+ * Controlled by MODEL_SWITCHING_ENABLED env var (default: enabled) and by
+ * `localRuntimeInUse` — swapping is a no-op when every role runs in the cloud,
+ * so a cloud-only run never pokes a local Ollama that may not even be there.
  */
 export class OllamaModelManager {
   private baseUrl: string;
   private keepAlive: string;
   readonly enabled: boolean;
 
-  constructor() {
+  constructor(localRuntimeInUse = true) {
     const v1Url = process.env.OLLAMA_BASE_URL || 'http://localhost:11434/v1';
     this.baseUrl = v1Url.replace(/\/v1\/?$/, '');
     this.keepAlive = process.env.OLLAMA_KEEP_ALIVE || '30m';
-    this.enabled = process.env.MODEL_SWITCHING_ENABLED !== 'false';
+    this.enabled = localRuntimeInUse && process.env.MODEL_SWITCHING_ENABLED !== 'false';
   }
 
   async load(identifier: string | undefined): Promise<void> {

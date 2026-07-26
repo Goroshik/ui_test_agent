@@ -6,8 +6,9 @@ screenshots every step.
 ## Prerequisites
 
 - Node.js 20+
-- [LM Studio](https://lmstudio.ai/) with a tool-capable model loaded
+- An [OpenRouter](https://openrouter.ai/) API key (the default provider)
 - Playwright browsers installed
+- Optionally [Ollama](https://ollama.com/) — only if you route some role back to a local model
 
 ## Install
 
@@ -23,19 +24,41 @@ Copy the env file and edit if needed:
 cp .env.example .env
 ```
 
-## Start LM Studio server
+## Configure the model provider
 
-1. Open LM Studio
-2. Load a model that supports tool/function calling (e.g. `qwen2.5-7b-instruct`,
-   `mistral-nemo`, `llama-3.1-8b-instruct`)
-3. Go to **Local Server** tab → click **Start Server**
-4. The server runs at `http://localhost:1234/v1` by default
-
-Set the model name in `.env` to match what you loaded:
+Every role (`main`, `planner`, `analyzer`, `coding`) runs on OpenRouter by
+default, so the only mandatory setting is the key:
 
 ```env
-LM_STUDIO_MODEL=qwen2.5-7b-instruct
+OPENROUTER_API_KEY=sk-or-...
 ```
+
+The default model is `deepseek/deepseek-v4-flash` — the cheapest DeepSeek on
+OpenRouter as of 2026-07-26 ($0.09 / 1M input tokens, $0.18 / 1M output tokens,
+1M-token context). It is **text-only**: the `main` and `analyzer` roles send
+screenshots, so either point them at a vision-capable model…
+
+```env
+MAIN_MODEL=qwen/qwen3-vl-235b-a22b-instruct
+ANALYZER_MODEL=qwen/qwen3-vl-235b-a22b-instruct
+```
+
+…or turn the image paths off and rely on ARIA snapshots
+(`SCREENSHOTS_ENABLED=false`, `SCREENSHOT_ANALYSIS_ENABLED=false`,
+`VERIFICATION_ENABLED=false`).
+
+To move a role — or everything — back to a local Ollama:
+
+```env
+LLM_PROVIDER=ollama          # all roles local
+MAIN_PROVIDER=ollama         # or just this one
+OLLAMA_BASE_URL=http://localhost:11434/v1
+OLLAMA_MAIN_MODEL=qwen2.5-vl:7b
+```
+
+Leaving an `OLLAMA_*_MODEL` blank auto-picks whatever Ollama currently has
+loaded (`/api/ps`). Ollama's load/unload model swapping is skipped automatically
+when no role uses it.
 
 ## Usage
 
@@ -68,7 +91,7 @@ All artifacts are saved only to the project-root folder:
 
 Screenshots are first saved to `./screenshots/incoming/` with sequential numbering.
 After the main browser run finishes, a separate post-run visual agent compares
-incoming screenshots against `./screenshots/baseline/` via LM Studio:
+incoming screenshots against `./screenshots/baseline/` via the `analyzer` model:
 
 - if baseline does not exist: screenshot is saved as baseline
 - if no visual changes: new screenshot is deleted
@@ -102,11 +125,19 @@ Important: `./visual-bot/screenshots` is not used by runtime logic.
 
 ## Environment variables
 
+See `.env.example` for the full annotated list. The provider-related ones:
+
 | Variable | Default | Description |
 |---|---|---|
-| `LM_STUDIO_BASE_URL` | `http://localhost:1234/v1` | LM Studio server URL |
-| `LM_STUDIO_MODEL` | `qwen2.5-7b-instruct` | Model identifier |
-| `LM_STUDIO_API_KEY` | `lm-studio` | API key (any value works) |
+| `OPENROUTER_API_KEY` | _(required)_ | OpenRouter key |
+| `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenRouter endpoint |
+| `OPENROUTER_MODEL` | `deepseek/deepseek-v4-flash` | Default model for every role |
+| `LLM_PROVIDER` | `openrouter` | Default provider: `openrouter` or `ollama` |
+| `<ROLE>_PROVIDER` | _(inherits `LLM_PROVIDER`)_ | Per-role provider (`MAIN`, `PLANNER`, `ANALYZER`, `CODING`) |
+| `<ROLE>_MODEL` | _(inherits the provider default)_ | Per-role model override |
+| `OLLAMA_BASE_URL` | `http://localhost:11434/v1` | Local Ollama endpoint (opt-in) |
+| `OLLAMA_API_KEY` | `ollama` | API key (any value works) |
+| `MODEL_SWITCHING_ENABLED` | `true` | Ollama load/unload swapping; ignored when no role is local |
 | `MAX_ITERATIONS` | `30` | Max agent steps before stopping |
 | `ATTENTION_MEMORY_MAX` | `200` | Max saved compare attention rules |
 | `DEBUG` | _(unset)_ | Set to `1` to show MCP logs and tool results |
@@ -163,7 +194,8 @@ npx tsx visual-bot/run-pipeline.ts [sessionId]
 visual-bot/
 ├── index.ts                  — точка входа, оркестратор
 ├── run-pipeline.ts           — standalone запуск анализа для сохранённой сессии
-├── lm-model-manager.ts       — управление моделью в LM Studio (load/unload)
+├── llm-provider.ts           — выбор провайдера и модели по роли (OpenRouter / Ollama)
+├── ollama-model-manager.ts   — управление локальной моделью в Ollama (load/unload)
 ├── visual-diff.ts            — сравнение скриншотов через LLM
 ├── visual-text-diff.ts       — сравнение ARIA-снапшотов через LLM
 ├── attention-memory.ts       — накопление правил сравнения для снижения ложных срабатываний

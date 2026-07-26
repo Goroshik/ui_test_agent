@@ -4,6 +4,7 @@ import { resolve } from 'path';
 import { MCPClient } from '../../mcp-client.js';
 import { Screenshotter } from '../../screenshotter.js';
 import { resolveModel } from '../../utils.js';
+import { createProvider } from '../../llm-provider.js';
 import { recordVisit, getVisitSummary } from '../../memory.js';
 import { getPageSummary, getComponentContextForUrl, toolGetPageComponents, toolSearchComponents } from '../../registry-context.js';
 import { RunLogger } from '../../run-logger.js';
@@ -225,12 +226,17 @@ export class Agent {
   // Network requests seen before the current action (for delta tracking)
   private seenNetworkUrls = new Set<string>();
   private lastScreenshotPath: string | null = null;
+  // Model advertised by the provider we built ourselves; empty when a client was injected.
+  private providerModel = '';
 
   constructor(client?: OpenAI, logger?: RunLogger, mongoRunId?: ObjectId, modelOverride?: string) {
-    this.client = client ?? new OpenAI({
-      baseURL: process.env.OLLAMA_BASE_URL || 'http://localhost:11434/v1',
-      apiKey: process.env.OLLAMA_API_KEY || 'ollama',
-    });
+    if (client) {
+      this.client = client;
+    } else {
+      const provider = createProvider('main');
+      this.client = provider.client;
+      this.providerModel = provider.model;
+    }
     this.logger = logger;
     this.mongoRunId = mongoRunId;
     this.mcp = new MCPClient();
@@ -255,7 +261,7 @@ export class Agent {
   }
 
   async run(prompt: string): Promise<void> {
-    if (!this.model) this.model = await resolveModel(this.client);
+    if (!this.model) this.model = this.providerModel || (await resolveModel(this.client));
     const model = this.model;
 
     const openaiTools = await this._connectAndPrepareTools(prompt, model);
