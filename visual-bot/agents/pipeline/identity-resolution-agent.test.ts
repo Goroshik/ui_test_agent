@@ -511,6 +511,31 @@ describe('IdentityResolutionAgent._buildRecord', () => {
     expect(build(anchor({ url: 'https://app.test/login' }), match()).pages).toEqual(['/login']);
   });
 
+  it('drops the query string from the page path', () => {
+    expect(build(anchor({ url: 'https://app.test/home?project=58' }), match()).pages).toEqual(['/home']);
+  });
+
+  it('collapses a record id in the page path so a dynamic route is one page', () => {
+    expect(build(anchor({ url: 'https://app.test/users/123' }), match()).pages).toEqual(['/users/:id']);
+  });
+
+  it('gives the same control on two records of a dynamic route one id', () => {
+    const el = { ariaRole: 'button', ariaName: 'Save' };
+    const first = build(anchor({ url: 'https://app.test/users/123', ...el }), match());
+    const second = build(anchor({ url: 'https://app.test/users/456', ...el }), match());
+
+    expect(second.id).toBe(first.id);
+    expect(second.pages).toEqual(first.pages);
+  });
+
+  it('still separates genuinely different routes', () => {
+    const el = { ariaRole: 'button', ariaName: 'Save' };
+    const users = build(anchor({ url: 'https://app.test/users/1', ...el }), match());
+    const orders = build(anchor({ url: 'https://app.test/orders/1', ...el }), match());
+
+    expect(orders.id).not.toBe(users.id);
+  });
+
   it('carries the match confidence onto the record', () => {
     expect(build(anchor(), match({ confidence: 'medium' })).confidence).toBe('medium');
   });
