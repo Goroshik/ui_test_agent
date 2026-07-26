@@ -80,6 +80,72 @@ describe('Agent._runIterations', () => {
       snapshotsEnabled: false,
     });
 
+  /** Text of the pushback the loop injected, or '' when it injected none. */
+  function pushbackText(messages: Message[]): string {
+    const pushback = messages.find((m) => m.role === 'user')?.content;
+    return typeof pushback === 'string' ? pushback : '';
+  }
+
+  /** Makes the loop believe the plan asked for `planned` clicks. */
+  function expectPlan(agent: Agent, planned: number): void {
+    agent['plannedToolCalls'] = { browser_click: planned };
+  }
+
+  it('pushes back instead of accepting a stop that left the plan unfinished', async () => {
+    const h = harness([finalMessage('all done'), finalMessage('really done')]);
+    expectPlan(h.agent, 1);
+    const messages: Message[] = [];
+
+    await run(h.agent, messages);
+
+    // Asked twice: the first stop was rejected, the second accepted.
+    expect(h.requested).toBe(2);
+    expect(pushbackText(messages)).toContain('you have not finished the plan');
+  });
+
+  it('names the shortfall in the pushback', async () => {
+    const h = harness([finalMessage(), finalMessage()]);
+    expectPlan(h.agent, 3);
+    const messages: Message[] = [];
+
+    await run(h.agent, messages);
+
+    expect(pushbackText(messages)).toContain('you performed 0');
+  });
+
+  it('pushes back at most once, so a stubborn model cannot loop forever', async () => {
+    const h = harness(Array.from({ length: 6 }, () => finalMessage()));
+    expectPlan(h.agent, 1);
+    const messages: Message[] = [];
+
+    await run(h.agent, messages);
+
+    expect(h.requested).toBe(2);
+    expect(messages.filter((m) => m.role === 'user')).toHaveLength(1);
+  });
+
+  it('accepts the stop when the plan asked for nothing trackable', async () => {
+    const h = harness([finalMessage()]);
+    const messages: Message[] = [];
+
+    await run(h.agent, messages);
+
+    expect(h.requested).toBe(1);
+    expect(messages.filter((m) => m.role === 'user')).toHaveLength(0);
+  });
+
+  it('accepts the stop once the planned actions were performed', async () => {
+    const h = harness([finalMessage()]);
+    expectPlan(h.agent, 1);
+    h.agent['performedToolCalls'] = { browser_click: 1 };
+    const messages: Message[] = [];
+
+    await run(h.agent, messages);
+
+    expect(h.requested).toBe(1);
+    expect(messages.filter((m) => m.role === 'user')).toHaveLength(0);
+  });
+
   it('stops as soon as the model returns no tool calls', async () => {
     const h = harness([finalMessage()]);
     await run(h.agent);
