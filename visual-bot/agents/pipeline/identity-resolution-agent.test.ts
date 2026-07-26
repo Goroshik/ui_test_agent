@@ -271,13 +271,58 @@ describe('IdentityResolutionAgent._resolvePreferredSelector', () => {
     expect(resolve({ ...base, domCss: '.unreliable', domKind: 'text' })).toBe('.unreliable');
   });
 
-  it('falls back to a ref-based selector as a last resort', () => {
-    expect(resolve({ ...base, ref: 'e42' })).toBe('[data-ref="e42"]');
+  it('emits no selector rather than a Playwright ref, which can never match', () => {
+    expect(resolve({ ...base, ref: 'e42' })).toBe('');
   });
 
-  it('emits an empty ref selector when the ref is missing', () => {
-    expect(resolve({ ...base, ref: null })).toBe('[data-ref=""]');
-    expect(resolve({ ...base, ref: undefined })).toBe('[data-ref=""]');
+  it('emits no selector when there is nothing to go on', () => {
+    expect(resolve({ ...base, ref: null })).toBe('');
+    expect(resolve({ ...base, ref: undefined })).toBe('');
+  });
+});
+
+describe('IdentityResolutionAgent._mergeSelectors', () => {
+  const merge = (
+    existing: Partial<ComponentRecord['selectors']>,
+    incoming: Partial<ComponentRecord['selectors']>,
+  ): ComponentRecord['selectors'] =>
+    makeAgent()['_mergeSelectors'](
+      { preferred: '', aria: '', testid: null, css: null, xpath: null, ...existing },
+      { preferred: '', aria: '', testid: null, css: null, xpath: null, ...incoming },
+    );
+
+  it('adopts a testid that only turned up on the later run', () => {
+    const merged = merge(
+      { preferred: 'button[name="Save"]', aria: 'button[name="Save"]' },
+      { testid: '[data-testid="save"]' },
+    );
+
+    expect(merged.testid).toBe('[data-testid="save"]');
+    expect(merged.preferred).toBe('[data-testid="save"]');
+  });
+
+  it('keeps an existing testid over a conflicting later one', () => {
+    const merged = merge({ testid: '[data-testid="first"]' }, { testid: '[data-testid="second"]' });
+    expect(merged.testid).toBe('[data-testid="first"]');
+  });
+
+  it('leaves a good preferred selector untouched', () => {
+    const merged = merge({ preferred: '#stable' }, { css: '.hash-x1y2' });
+    expect(merged.preferred).toBe('#stable');
+  });
+
+  it('takes the newer aria name, since labels get renamed', () => {
+    const merged = merge({ aria: 'button[name="Old"]' }, { aria: 'button[name="New"]' });
+    expect(merged.aria).toBe('button[name="New"]');
+  });
+
+  it('keeps the existing aria when the new record has none', () => {
+    const merged = merge({ aria: 'button[name="Old"]' }, { aria: '' });
+    expect(merged.aria).toBe('button[name="Old"]');
+  });
+
+  it('fills an empty preferred from what the merge produced', () => {
+    expect(merge({}, { aria: 'button[name="Save"]' }).preferred).toBe('button[name="Save"]');
   });
 });
 

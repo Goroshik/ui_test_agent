@@ -3,6 +3,7 @@ import { readFile, writeFile, mkdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { normalizePagePath } from '../../url-path.js';
+import { upgradePreferred } from '../../selector-quality.js';
 import type {
   StepRecord,
   AriaComponent,
@@ -560,14 +561,17 @@ Return JSON (only, no explanation):
     return RELIABLE_CSS_KINDS.has(domKind) ? domCss : null;
   }
 
-  // Priority: testid > stable CSS from live evaluate > aria-style locator > any CSS > fallback
+  // Priority: testid > stable CSS from live evaluate > aria-style locator > any CSS
   private _resolvePreferredSelector(parts: PreferredSelectorParts): string {
     if (parts.testidSel) return parts.testidSel;
     const reliableCss = this._reliableDomCss(parts.domCss, parts.domKind);
     if (reliableCss) return reliableCss;
     if (parts.aria) return parts.aria;
     if (parts.domCss) return parts.domCss;
-    return `[data-ref="${parts.ref ?? ''}"]`;
+    // No selector rather than a Playwright ref: `[data-ref="e7"]` is a
+    // per-snapshot handle, so it matches nothing in a real browser while looking
+    // like a stable attribute selector. The needs-testid report picks these up.
+    return '';
   }
 
   private _buildSelectors(anchor: AnchorEntry, match: MatchResult): ComponentSelectors {
@@ -635,19 +639,26 @@ Return JSON (only, no explanation):
 
   // ─── Registry merge ───────────────────────────────────────────────────────────
 
+  private _mergeSelectors(existing: ComponentSelectors, incoming: ComponentSelectors): ComponentSelectors {
+    const merged: ComponentSelectors = {
+      preferred: existing.preferred,
+      aria: incoming.aria || existing.aria,
+      testid: existing.testid ?? incoming.testid,
+      css: existing.css ?? incoming.css,
+      xpath: existing.xpath ?? incoming.xpath,
+    };
+    // Recomputed, not carried over: a testid found on a later run has to win, and
+    // a component first seen without one must not stay pinned to its fallback.
+    return { ...merged, preferred: upgradePreferred(merged.preferred, merged) };
+  }
+
   private _mergeRecord(existing: ComponentRecord, newRec: ComponentRecord): ComponentRecord {
     if (existing.manualOverride) return existing;
 
     return {
       ...existing,
       pages: [...new Set([...existing.pages, ...newRec.pages])],
-      selectors: {
-        preferred: existing.selectors.preferred,
-        aria: newRec.selectors.aria || existing.selectors.aria,
-        testid: existing.selectors.testid ?? newRec.selectors.testid,
-        css: existing.selectors.css ?? newRec.selectors.css,
-        xpath: existing.selectors.xpath ?? newRec.selectors.xpath,
-      },
+      selectors: this._mergeSelectors(existing.selectors, newRec.selectors),
       actions: this._mergeActions(existing.actions, newRec.actions),
       states: { ...existing.states, ...newRec.states },
       constraints: newRec.constraints ?? existing.constraints ?? null,

@@ -5,6 +5,7 @@ import { fileURLToPath } from 'url';
 import { config } from 'dotenv';
 import type { ComponentRecord, ComponentRegistry } from '../pipeline/types.js';
 import { runLlm } from '../agents/test-gen/llm-runner.js';
+import { isUsableSelector } from '../selector-quality.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -67,7 +68,9 @@ These DO NOT work with cy.get() in Cypress. Convert them using this priority:
 
 Priority 1 — use selectors.testid if present:  [data-testid="X"] or [data-cy="X"]
 Priority 2 — use selectors.css if present:       the raw CSS string as-is
-Priority 3 — use selectors.preferred if it starts with "[data-": the raw string as-is
+Priority 3 — use selectors.preferred if it starts with "[data-testid", "[data-cy", "[data-qa" or "#": the raw string as-is
+   NEVER emit a "[data-ref=...]" selector: those are Playwright snapshot handles
+   (e7, e12) that do not exist in the page and can never match. Skip the component.
 Priority 4 — convert ARIA locator to CSS equivalent:
   - button[name="X"]   → button:contains("X")   or  [aria-label="X"]
   - link[name="X"]     → a:contains("X")         or  a[aria-label="X"]
@@ -95,7 +98,7 @@ FORBIDDEN:
 export const SELECTORS = {
   // Page: /v1/login
   V1_LOGIN: {
-    EMAIL_INPUT: '[data-ref="e7"]',
+    EMAIL_INPUT: 'input[aria-label="Email"]',
     PASSWORD: 'input[aria-label="Password"]',
     SIGN_IN: 'button:contains("Sign in")',
   },
@@ -203,8 +206,9 @@ Do NOT wrap output in \`\`\`javascript...\`\`\` or any other markdown.`;
         : `[data-testid="${selectors.testid}"]`;
     }
     if (selectors.css) return selectors.css;
-    if (selectors.preferred?.startsWith('[data-')) return selectors.preferred;
-    return selectors.preferred;
+    // A `[data-ref="e7"]` preferred value is a Playwright snapshot handle, not a
+    // selector — emitting it produces a cy.get() that can never match.
+    return isUsableSelector(selectors.preferred) ? selectors.preferred : '';
   }
 
   private _pageKey(page: string): string {
