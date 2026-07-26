@@ -279,7 +279,14 @@ describe('Agent._endCollectorStep', () => {
   });
 });
 
-describe('Agent._captureAfterToolCall', () => {
+describe('Agent snapshot + artifact capture', () => {
+  const savedEffectFlag = process.env.ACTION_EFFECT_CHECK_ENABLED;
+
+  afterEach(() => {
+    if (savedEffectFlag === undefined) delete process.env.ACTION_EFFECT_CHECK_ENABLED;
+    else process.env.ACTION_EFFECT_CHECK_ENABLED = savedEffectFlag;
+  });
+
   function setup(screenshotPath?: string): { agent: Agent; visits: string[] } {
     const agent = new Agent({} as unknown as OpenAI);
     const visits: string[] = [];
@@ -302,84 +309,109 @@ describe('Agent._captureAfterToolCall', () => {
   }
 
   const call = { id: 'c1', name: 'browser_click', args: {} };
+  const BOTH_OFF = { screenshotsEnabled: false, snapshotsEnabled: false };
+  const SHOTS_ON = { screenshotsEnabled: true, snapshotsEnabled: false };
 
-  it('records a navigate visit and skips capture when both flags are off', async () => {
-    const { agent, visits } = setup('/tmp/shot.webp');
-    const result = await agent['_captureAfterToolCall'](call, 'content', {
-      screenshotsEnabled: false,
-      snapshotsEnabled: false,
+  describe('_readPostActionSnapshot', () => {
+    it('still fetches a snapshot with both artifact flags off, so effect checking works', async () => {
+      const { agent } = setup();
+      const snapshot = vi.fn(() => Promise.resolve(textResult('Page URL: https://app.test/y')));
+      agent['mcp'] = { snapshot } as never;
+
+      const result = await agent['_readPostActionSnapshot'](call, 'ignored', BOTH_OFF);
+
+      expect(result).toBe('Page URL: https://app.test/y');
+      expect(snapshot).toHaveBeenCalledOnce();
     });
 
-    expect(result).toBeUndefined();
-    expect(visits).toEqual(['navigate']);
-  });
+    it('skips the extra fetch when effect checking is switched off', async () => {
+      process.env.ACTION_EFFECT_CHECK_ENABLED = 'false';
+      const { agent } = setup();
+      const snapshot = vi.fn(() => Promise.resolve(textResult('x')));
+      agent['mcp'] = { snapshot } as never;
 
-  it('returns the screenshot path when capture succeeds', async () => {
-    const { agent, visits } = setup('/tmp/shot.webp');
-    const result = await agent['_captureAfterToolCall'](call, 'content', {
-      screenshotsEnabled: true,
-      snapshotsEnabled: false,
+      expect(await agent['_readPostActionSnapshot'](call, 'ignored', BOTH_OFF)).toBe('');
+      expect(snapshot).not.toHaveBeenCalled();
     });
 
-    expect(result).toBe('/tmp/shot.webp');
-    expect(visits).toEqual(['url-change']);
-  });
+    it('still fetches for artifact capture even when effect checking is off', async () => {
+      process.env.ACTION_EFFECT_CHECK_ENABLED = 'false';
+      const { agent } = setup();
+      const snapshot = vi.fn(() => Promise.resolve(textResult('Page URL: https://app.test/y')));
+      agent['mcp'] = { snapshot } as never;
 
-  it('returns undefined when capture produced no screenshot', async () => {
-    const { agent } = setup(undefined);
-    const result = await agent['_captureAfterToolCall'](call, 'content', {
-      screenshotsEnabled: true,
-      snapshotsEnabled: false,
-    });
-    expect(result).toBeUndefined();
-  });
-
-  it('uses the tool content directly for a browser_snapshot call', async () => {
-    const { agent } = setup('/tmp/shot.webp');
-    const snapshot = vi.fn(() => Promise.resolve(textResult('should not be used')));
-    agent['mcp'] = { snapshot } as never;
-
-    await agent['_captureAfterToolCall'](
-      { id: 'c1', name: 'browser_snapshot', args: {} },
-      'Page URL: https://app.test/x',
-      { screenshotsEnabled: true, snapshotsEnabled: false },
-    );
-
-    expect(snapshot).not.toHaveBeenCalled();
-  });
-
-  it('fetches a fresh snapshot for any other tool', async () => {
-    const { agent } = setup('/tmp/shot.webp');
-    const snapshot = vi.fn(() => Promise.resolve(textResult('Page URL: https://app.test/y')));
-    agent['mcp'] = { snapshot } as never;
-
-    await agent['_captureAfterToolCall'](call, 'ignored', {
-      screenshotsEnabled: true,
-      snapshotsEnabled: false,
+      expect(await agent['_readPostActionSnapshot'](call, 'ignored', SHOTS_ON)).not.toBe('');
+      expect(snapshot).toHaveBeenCalledOnce();
     });
 
-    expect(snapshot).toHaveBeenCalledOnce();
-  });
+    it('uses the tool content directly for a browser_snapshot call', async () => {
+      const { agent } = setup();
+      const snapshot = vi.fn(() => Promise.resolve(textResult('should not be used')));
+      agent['mcp'] = { snapshot } as never;
 
-  it('bails out when the snapshot text is empty', async () => {
-    const { agent, visits } = setup('/tmp/shot.webp');
-    agent['mcp'] = { snapshot: () => Promise.resolve(textResult('')) } as never;
+      const result = await agent['_readPostActionSnapshot'](
+        { id: 'c1', name: 'browser_snapshot', args: {} },
+        'Page URL: https://app.test/x',
+        SHOTS_ON,
+      );
 
-    const result = await agent['_captureAfterToolCall'](call, '', {
-      screenshotsEnabled: true,
-      snapshotsEnabled: false,
+      expect(result).toBe('Page URL: https://app.test/x');
+      expect(snapshot).not.toHaveBeenCalled();
     });
 
-    expect(result).toBeUndefined();
-    expect(visits).toEqual([]);
+    it('returns the browser_snapshot content even with effect checking off', async () => {
+      process.env.ACTION_EFFECT_CHECK_ENABLED = 'false';
+      const { agent } = setup();
+
+      const result = await agent['_readPostActionSnapshot'](
+        { id: 'c1', name: 'browser_snapshot', args: {} },
+        'Page URL: https://app.test/x',
+        BOTH_OFF,
+      );
+
+      expect(result).toBe('Page URL: https://app.test/x');
+    });
   });
 
-  it('runs capture when only snapshots are enabled', async () => {
-    const { agent, visits } = setup(undefined);
-    await agent['_captureAfterToolCall'](call, 'content', {
-      screenshotsEnabled: false,
-      snapshotsEnabled: true,
+  describe('_captureArtifacts', () => {
+    it('records a navigate visit and skips capture when both flags are off', async () => {
+      const { agent, visits } = setup('/tmp/shot.webp');
+      const result = await agent['_captureArtifacts'](call, 'Page URL: https://app.test/home', BOTH_OFF);
+
+      expect(result).toBeUndefined();
+      expect(visits).toEqual(['navigate']);
     });
-    expect(visits).toEqual(['url-change']);
+
+    it('returns the screenshot path when capture succeeds', async () => {
+      const { agent, visits } = setup('/tmp/shot.webp');
+      const result = await agent['_captureArtifacts'](call, 'Page URL: https://app.test/home', SHOTS_ON);
+
+      expect(result).toBe('/tmp/shot.webp');
+      expect(visits).toEqual(['url-change']);
+    });
+
+    it('returns undefined when capture produced no screenshot', async () => {
+      const { agent } = setup(undefined);
+      const result = await agent['_captureArtifacts'](call, 'Page URL: https://app.test/home', SHOTS_ON);
+      expect(result).toBeUndefined();
+    });
+
+    it('bails out when the snapshot text is empty', async () => {
+      const { agent, visits } = setup('/tmp/shot.webp');
+
+      const result = await agent['_captureArtifacts'](call, '', SHOTS_ON);
+
+      expect(result).toBeUndefined();
+      expect(visits).toEqual([]);
+    });
+
+    it('runs capture when only snapshots are enabled', async () => {
+      const { agent, visits } = setup(undefined);
+      await agent['_captureArtifacts'](call, 'Page URL: https://app.test/home', {
+        screenshotsEnabled: false,
+        snapshotsEnabled: true,
+      });
+      expect(visits).toEqual(['url-change']);
+    });
   });
 });
