@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { checkActionEffect, withEffectWarning, type ActionEffect } from './action-effect.js';
+import {
+  checkActionEffect,
+  withEffectWarning,
+  snapshotUrl,
+  urlChangedBetween,
+  type ActionEffect,
+} from './action-effect.js';
 
 function effect(overrides: Partial<ActionEffect> = {}): ActionEffect {
   return {
@@ -7,13 +13,16 @@ function effect(overrides: Partial<ActionEffect> = {}): ActionEffect {
     toolArgs: {},
     snapshotBefore: '- button "Save"',
     snapshotAfter: '- button "Save"\n- alert "Saved"',
-    urlChanged: false,
     ...overrides,
   };
 }
 
+/** Two snapshots whose only difference is the page URL — i.e. a navigation. */
+const AT_LOGIN = 'Page URL: https://app.test/login\n- button "Save"';
+const AT_HOME = 'Page URL: https://app.test/home\n- button "Save"';
+
 describe('checkActionEffect — tools it ignores', () => {
-  it.each(['browser_snapshot', 'browser_navigate', 'browser_wait_for', 'browser_hover'])(
+  it.each(['browser_snapshot', 'browser_navigate', 'browser_wait_for'])(
     'says nothing about %s',
     (toolName) => {
       expect(checkActionEffect(effect({ toolName, snapshotAfter: '- button "Save"' }))).toBe('');
@@ -36,9 +45,9 @@ describe('checkActionEffect — clicks and key presses', () => {
     expect(checkActionEffect(effect())).toBe('');
   });
 
-  it('is quiet when the URL changed even though the snapshot did not', () => {
+  it('is quiet when the URL changed even though the rest of the snapshot did not', () => {
     expect(
-      checkActionEffect(effect({ snapshotAfter: '- button "Save"', urlChanged: true })),
+      checkActionEffect(effect({ snapshotBefore: AT_LOGIN, snapshotAfter: AT_HOME })),
     ).toBe('');
   });
 
@@ -88,7 +97,12 @@ describe('checkActionEffect — typing', () => {
 
   it('is quiet when typing navigated away — the field is gone for a good reason', () => {
     const result = checkActionEffect(
-      effect({ toolName: 'browser_type', toolArgs: { text: 'abc' }, snapshotAfter: '- heading "Home"', urlChanged: true }),
+      effect({
+        toolName: 'browser_type',
+        toolArgs: { text: 'abc' },
+        snapshotBefore: AT_LOGIN,
+        snapshotAfter: 'Page URL: https://app.test/home\n- heading "Home"',
+      }),
     );
     expect(result).toBe('');
   });
@@ -116,6 +130,72 @@ describe('checkActionEffect — typing', () => {
   function typingWarning(text: string, snapshotAfter: string): string {
     return checkActionEffect(typing(text, snapshotAfter));
   }
+});
+
+describe('checkActionEffect — hover', () => {
+  function hover(snapshotAfter: string, snapshotBefore = '- button "Menu"'): string {
+    return checkActionEffect(effect({ toolName: 'browser_hover', snapshotBefore, snapshotAfter }));
+  }
+
+  it('is quiet when the hover revealed something', () => {
+    expect(hover('- button "Menu"\n- menu "Settings"')).toBe('');
+  });
+
+  it('notes an unchanged snapshot rather than warning — hover styling is CSS-only', () => {
+    const note = hover('- button "Menu"');
+
+    expect(note).toContain('NOTE:');
+    expect(note).not.toContain('WARNING:');
+  });
+
+  it('says the no-op is often fine, so the model does not retry pointlessly', () => {
+    expect(hover('- button "Menu"')).toContain('often fine');
+  });
+
+  it('blocks the dangerous inference: clicking a menu item never seen in a snapshot', () => {
+    expect(hover('- button "Menu"')).toContain('Do not click an item you have not seen in a snapshot');
+  });
+
+  it('is quiet when the hover navigated', () => {
+    expect(hover(AT_HOME, AT_LOGIN)).toBe('');
+  });
+
+  it('says nothing on the first action, with no before-snapshot', () => {
+    expect(checkActionEffect(effect({ toolName: 'browser_hover', snapshotBefore: null, snapshotAfter: '- x' }))).toBe('');
+  });
+});
+
+describe('snapshotUrl', () => {
+  it('reads the page url a snapshot reports', () => {
+    expect(snapshotUrl(AT_LOGIN)).toBe('https://app.test/login');
+  });
+
+  it('is null when the snapshot reports none', () => {
+    expect(snapshotUrl('- button "Save"')).toBeNull();
+  });
+
+  it('is null for an empty snapshot', () => {
+    expect(snapshotUrl('')).toBeNull();
+  });
+});
+
+describe('urlChangedBetween', () => {
+  it('is true when the two snapshots report different urls', () => {
+    expect(urlChangedBetween(AT_LOGIN, AT_HOME)).toBe(true);
+  });
+
+  it('is false when they report the same url', () => {
+    expect(urlChangedBetween(AT_LOGIN, AT_LOGIN)).toBe(false);
+  });
+
+  it('is false — not a guess — when either snapshot reports no url', () => {
+    expect(urlChangedBetween('- button "Save"', AT_HOME)).toBe(false);
+    expect(urlChangedBetween(AT_LOGIN, '- button "Save"')).toBe(false);
+  });
+
+  it('is false when there is no before-snapshot at all', () => {
+    expect(urlChangedBetween(null, AT_HOME)).toBe(false);
+  });
 });
 
 describe('withEffectWarning', () => {

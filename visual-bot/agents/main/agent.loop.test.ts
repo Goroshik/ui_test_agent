@@ -288,7 +288,9 @@ describe('Agent._handleMcpToolCall', () => {
       trace.ended.push(isError);
       return Promise.resolve();
     };
-    agent['_captureAfterToolCall'] = (): Promise<string | undefined> => {
+    agent['_readPostActionSnapshot'] = (): Promise<string> =>
+      Promise.resolve('Page URL: https://app.test/home\n- button "Save"');
+    agent['_captureArtifacts'] = (): Promise<string | undefined> => {
       trace.captured++;
       return Promise.resolve('/tmp/shot.webp');
     };

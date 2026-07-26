@@ -522,12 +522,14 @@ export class Agent {
     }
 
     const snapshotBefore = this.lastPostActionSnapshot;
-    const urlBefore = this.lastPageUrl;
-    const screenshotPath = await this._captureAfterToolCall(call, content, flags);
+    const snapshotAfter = await this._readPostActionSnapshot(call, content, flags);
+    if (snapshotAfter) this.lastPostActionSnapshot = snapshotAfter;
+
+    const screenshotPath = await this._captureArtifacts(call, snapshotAfter, flags);
     await this._persistStep(call, content, screenshotPath, exec);
     this._countPerformedCall(call.name);
 
-    const warning = this._describeActionEffect(call, exec, snapshotBefore, urlBefore);
+    const warning = this._describeActionEffect(call, exec, snapshotBefore, snapshotAfter);
     messages.push({ role: 'tool', tool_call_id: call.id, content: withEffectWarning(content || 'OK', warning) });
 
     await this._injectPostNavigationContext(call, exec.isToolError, messages);
@@ -538,16 +540,15 @@ export class Agent {
    * this the model builds on steps that never landed — which reads as it having
    * forgotten to press the button at all.
    */
-  private _describeActionEffect(call: ParsedToolCall, exec: McpExecResult, snapshotBefore: string | null, urlBefore: string | null): string {
+  private _describeActionEffect(call: ParsedToolCall, exec: McpExecResult, snapshotBefore: string | null, snapshotAfter: string): string {
     if (exec.isToolError) return '';
     const warning = checkActionEffect({
       toolName: call.name,
       toolArgs: call.args,
       snapshotBefore,
-      snapshotAfter: this.lastPostActionSnapshot ?? '',
-      urlChanged: this.lastPageUrl !== urlBefore,
+      snapshotAfter,
     });
-    if (warning) console.log(`    ⚠️  no visible effect from ${call.name} — warned the model`);
+    if (warning) console.log(`    ⚠️  ${call.name} left the page unchanged — told the model`);
     return warning;
   }
 
@@ -599,22 +600,28 @@ export class Agent {
     }
   }
 
-  private async _captureAfterToolCall(
-    call: ParsedToolCall,
-    content: string,
-    flags: RunFlags,
-  ): Promise<string | undefined> {
+  /**
+   * The post-action snapshot is needed to tell whether the action landed, so it
+   * must not depend on the artifact flags: with screenshots and snapshots both
+   * off there was nothing to compare and every effect check silently passed.
+   */
+  private _needsPostActionSnapshot(flags: RunFlags): boolean {
+    if (flags.screenshotsEnabled || flags.snapshotsEnabled) return true;
+    return process.env.ACTION_EFFECT_CHECK_ENABLED !== 'false';
+  }
+
+  private async _readPostActionSnapshot(call: ParsedToolCall, content: string, flags: RunFlags): Promise<string> {
+    if (call.name === 'browser_snapshot') return content;
+    if (!this._needsPostActionSnapshot(flags)) return '';
+    return this._extractTextContent(await this.mcp.snapshot());
+  }
+
+  private async _captureArtifacts(call: ParsedToolCall, snapshotText: string, flags: RunFlags): Promise<string | undefined> {
     if (!flags.screenshotsEnabled && !flags.snapshotsEnabled) {
       await this._recordNavigateVisitIfApplicable(call);
       return undefined;
     }
-
-    const snapshotText = call.name === 'browser_snapshot'
-      ? content
-      : this._extractTextContent(await this.mcp.snapshot());
     if (!snapshotText) return undefined;
-
-    this.lastPostActionSnapshot = snapshotText;
 
     const isInteraction = INTERACTION_TOOLS.has(call.name);
     const ctx: CaptureContext = {
