@@ -44,7 +44,7 @@ async function verifyAndDecideRetry(params: VerifyParams): Promise<VerifyResult>
   const effectiveValidatorModel = validatorModel ?? await resolveModel(client);
   const verification = await mm.withModel(validatorModel, () => {
     const verifier = new TaskVerificationAgent(client, effectiveValidatorModel);
-    return verifier.verify(plan, agent.getLastScreenshotPath());
+    return verifier.verify(plan, agent.getLastAriaSnapshot());
   });
 
   if (verification.success) {
