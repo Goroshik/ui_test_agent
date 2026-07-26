@@ -37,25 +37,24 @@ The default model is `deepseek/deepseek-v4-flash` — the cheapest DeepSeek on
 OpenRouter as of 2026-07-26 ($0.09 / 1M input tokens, $0.18 / 1M output tokens,
 1M-token context).
 
-It is **text-only**, which is fine for `main`, `planner` and `coding`: the
-browser agent navigates off ARIA snapshots (`browser_snapshot`) and never sends
-a screenshot to the model — captured images go to disk only. Only the
-`analyzer` role sends images, in two places:
+It is **text-only**, and the default pipeline is fine with that. Everything
+works off ARIA snapshots (`browser_snapshot`):
 
-| Where | How often | Toggle |
+| Stage | Input | Needs vision? |
 |---|---|---|
-| `TaskVerificationAgent` — did the task succeed? | once per run | `VERIFICATION_ENABLED` |
-| `VisualDiff` — screenshot vs baseline | once per changed screenshot | `SCREENSHOT_ANALYSIS_ENABLED` |
+| `Agent` — drives the browser | ARIA snapshot text | no — screenshots go to disk, never to the model |
+| `TaskVerificationAgent` — did the task succeed? | last ARIA snapshot | no |
+| `VisualTextDiff` — page vs baseline | ARIA snapshot text | no (`SNAPSHOT_ANALYSIS_ENABLED`) |
+| `VisualDiff` — screenshot vs baseline | screenshot, resized to 512px | **yes** (`SCREENSHOT_ANALYSIS_ENABLED`) |
 
-So either give that one role a vision-capable model…
+So the only reason to configure a second model is if you want the pixel diff:
 
 ```env
 ANALYZER_MODEL=qwen/qwen3-vl-235b-a22b-instruct
 ```
 
-…or turn those two off and rely on the ARIA snapshot diff
-(`SNAPSHOT_ANALYSIS_ENABLED`), which covers the same ground on text and stays on
-DeepSeek. Note that the component registry — and therefore the generated Cypress
+Otherwise leave `SCREENSHOT_ANALYSIS_ENABLED=false` and stay on DeepSeek for the
+whole run. Note that the component registry — and therefore the generated Cypress
 tests — is built from ARIA/DOM/network only; no pixels feed into it either way.
 
 To move a role — or everything — back to a local Ollama:
@@ -188,7 +187,7 @@ Agent (main)          — выполняет шаги в браузере, со�
        ↓
 PostRunCompareAgent   — сравнивает скриншоты и ARIA-снапшоты с baseline
        ↓
-TaskVerificationAgent — проверяет выполнение задачи по финальному скриншоту
+TaskVerificationAgent — проверяет выполнение задачи по финальному ARIA-снапшоту
        ↓
 PipelineRunner        — анализирует артефакты → строит реестр компонентов
 ```

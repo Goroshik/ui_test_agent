@@ -14,9 +14,9 @@ export interface LlmProvider {
  * tokens, $0.18 / 1M output tokens, 1M-token context. DeepSeek reprices often —
  * re-check https://openrouter.ai/deepseek before bumping this.
  *
- * Text-only, which is fine for three of the four roles: the main agent drives
- * the browser off ARIA snapshots and never sends an image. Only `analyzer` does
- * (task verification + screenshot diff) — see ANALYZER_MODEL in `.env.example`.
+ * Text-only, which is fine everywhere except one optional path: the browser
+ * agent and the task verifier both work off ARIA snapshots, so the only caller
+ * that needs vision is the screenshot diff (SCREENSHOT_ANALYSIS_ENABLED).
  */
 export const DEFAULT_OPENROUTER_MODEL = 'deepseek/deepseek-v4-flash';
 

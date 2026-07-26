@@ -254,6 +254,11 @@ export class Agent {
     return this.lastScreenshotPath;
   }
 
+  /** Latest ARIA snapshot text seen this run — the text counterpart of getLastScreenshotPath(). */
+  getLastAriaSnapshot(): string | null {
+    return this.lastAriaContent ?? this.lastCapturedSnapshot;
+  }
+
   /** Request graceful stop — agent will finish the current step and then halt. */
   requestStop(): void {
     this.stopRequested = true;
