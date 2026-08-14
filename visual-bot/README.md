@@ -194,47 +194,47 @@ communicate with the Playwright browser server. All available browser tools
 (navigate, click, type, select, evaluate, etc.) are discovered dynamically and
 forwarded to the LLM as OpenAI-compatible function definitions.
 
-## Полный пайплайн (index.ts)
+## Full pipeline (index.ts)
 
 ```
-MemoryAnalysisAgent   — анализирует реестр, находит релевантные страницы
+MemoryAnalysisAgent   — analyzes the registry, finds relevant pages
        ↓
-PlannerAgent          — генерирует пошаговый план из задачи + контекста
+PlannerAgent          — generates a step-by-step plan from the task + context
        ↓
-Agent (main)          — выполняет шаги в браузере, собирает артефакты
+Agent (main)          — executes the steps in the browser, collects artifacts
        ↓
-PostRunCompareAgent   — сравнивает скриншоты и ARIA-снапшоты с baseline
+PostRunCompareAgent   — compares screenshots and ARIA snapshots against baseline
        ↓
-TaskVerificationAgent — проверяет выполнение задачи по финальному ARIA-снапшоту
+TaskVerificationAgent — verifies task completion from the final ARIA snapshot
        ↓
-PipelineRunner        — анализирует артефакты → строит реестр компонентов
+PipelineRunner        — analyzes artifacts → builds the component registry
 ```
 
-Для перезапуска только пайплайна без повторного выполнения задачи:
+To rerun just the pipeline without re-executing the task:
 
 ```bash
 npx tsx visual-bot/run-pipeline.ts [sessionId]
 ```
 
-## Структура файлов
+## File structure
 
 ```
 visual-bot/
-├── index.ts                  — точка входа, оркестратор
-├── run-pipeline.ts           — standalone запуск анализа для сохранённой сессии
+├── index.ts                  — entry point, orchestrator
+├── run-pipeline.ts           — standalone analysis run for a saved session
 ├── run.ts                    — CLI: crawl / analyze / generate / all
-├── steps.ts                  — что запускать на каждом шаге (чистый модуль)
-├── llm-provider.ts           — выбор провайдера и модели по роли (OpenRouter / Ollama)
-├── tool-catalog.ts           — единый источник: имена тулов, схемы и описания для промптов
-├── url-path.ts               — нормализация путей (:id вместо идентификаторов записей)
-├── ollama-model-manager.ts   — управление локальной моделью в Ollama (load/unload)
-├── visual-diff.ts            — сравнение скриншотов через LLM
-├── visual-text-diff.ts       — сравнение ARIA-снапшотов через LLM
-├── attention-memory.ts       — накопление правил сравнения для снижения ложных срабатываний
-├── registry-context.ts       — кэш и провайдер реестра компонентов для агентов
-├── memory.ts                 — трекер посещённых URL
-├── run-logger.ts             — логирование в файл и MongoDB
+├── steps.ts                  — what to run at each step (pure module)
+├── llm-provider.ts           — provider and model selection per role (OpenRouter / Ollama)
+├── tool-catalog.ts           — single source of truth: tool names, schemas, and prompt descriptions
+├── url-path.ts               — path normalization (:id instead of record identifiers)
+├── ollama-model-manager.ts   — local model management in Ollama (load/unload)
+├── visual-diff.ts            — screenshot comparison via LLM
+├── visual-text-diff.ts       — ARIA snapshot comparison via LLM
+├── attention-memory.ts       — accumulates comparison rules to reduce false positives
+├── registry-context.ts       — cache and provider of the component registry for agents
+├── memory.ts                 — tracker of visited URLs
+├── run-logger.ts             — logging to file and MongoDB
 ├── utils.ts                  — resolveModel, resizeForVision, parseDiffJson
-├── agents/                   — все агенты (см. agents/README.md)
-└── pipeline/                 — типы и файловые хранилища (см. pipeline/README.md)
+├── agents/                   — all agents (see agents/README.md)
+└── pipeline/                 — types and file storage (see pipeline/README.md)
 ```

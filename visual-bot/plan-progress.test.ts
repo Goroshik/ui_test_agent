@@ -6,27 +6,27 @@ import {
   type ToolCounts,
 } from './plan-progress.js';
 
-const RUSSIAN_PLAN = `1. Перейти на http://localhost:3000/v1/login
-2. Вызвать browser_snapshot чтобы осмотреть страницу
-3. Ввести email через browser_type
-4. Ввести пароль через browser_type
-5. Нажать кнопку входа через browser_click
-6. Вызвать browser_snapshot для проверки`;
+const SAMPLE_PLAN = `1. Navigate to http://localhost:3000/v1/login
+2. Call browser_snapshot to inspect the page
+3. Enter the email via browser_type
+4. Enter the password via browser_type
+5. Press the login button via browser_click
+6. Call browser_snapshot to verify`;
 
 describe('countPlannedToolCalls', () => {
   it('counts repeated calls to the same tool', () => {
-    expect(countPlannedToolCalls(RUSSIAN_PLAN).browser_type).toBe(2);
+    expect(countPlannedToolCalls(SAMPLE_PLAN).browser_type).toBe(2);
   });
 
-  it('works on a Russian plan, because it keys off tool names', () => {
-    const counts = countPlannedToolCalls(RUSSIAN_PLAN);
+  it('keys off literal tool names, not sentence structure', () => {
+    const counts = countPlannedToolCalls(SAMPLE_PLAN);
 
     expect(counts.browser_click).toBe(1);
     expect(counts.browser_type).toBe(2);
   });
 
   it('ignores browser_snapshot — the agent legitimately snapshots more than planned', () => {
-    expect(countPlannedToolCalls(RUSSIAN_PLAN)).not.toHaveProperty('browser_snapshot');
+    expect(countPlannedToolCalls(SAMPLE_PLAN)).not.toHaveProperty('browser_snapshot');
   });
 
   it('omits a tool the plan never mentions', () => {
@@ -122,7 +122,7 @@ describe('buildPushbackMessage', () => {
 
 describe('end to end', () => {
   it('catches the reported failure: agent summarised after skipping the form', () => {
-    const planned = countPlannedToolCalls(RUSSIAN_PLAN);
+    const planned = countPlannedToolCalls(SAMPLE_PLAN);
     const performed: ToolCounts = { browser_navigate: 1 };
 
     const message = buildPushbackMessage(findShortfalls(planned, performed));
@@ -132,7 +132,7 @@ describe('end to end', () => {
   });
 
   it('stays silent when the agent did carry the plan out', () => {
-    const planned = countPlannedToolCalls(RUSSIAN_PLAN);
+    const planned = countPlannedToolCalls(SAMPLE_PLAN);
     const performed: ToolCounts = { browser_navigate: 1, browser_type: 2, browser_click: 1 };
 
     expect(buildPushbackMessage(findShortfalls(planned, performed))).toBe('');

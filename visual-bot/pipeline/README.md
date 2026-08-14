@@ -1,42 +1,42 @@
 # pipeline/
 
-Слой файловой персистентности — заменяет MongoDB. Содержит типы, хранилища данных и коллектор сессий.
+File-based persistence layer — replaces MongoDB. Contains types, data stores, and the session collector.
 
-## Файлы
+## Files
 
 ### `types.ts`
-Все TypeScript-типы для пайплайна. Никаких зависимостей — только интерфейсы.
+All TypeScript types for the pipeline. No dependencies — interfaces only.
 
-Ключевые типы:
-| Тип | Что описывает |
+Key types:
+| Type | What it describes |
 |-----|--------------|
-| `SessionMeta` | Метаданные сессии (id, task, baseUrl, status, шаги) |
-| `StepRecord` | Полная запись шага: URL, действие, артефакты до/после, статус |
-| `ActionData` | Описание действия: тип, элемент, значение |
-| `ArtifactRefs` | Ссылки на файлы артефактов (ARIA, DOM, network, storage, screenshot) |
-| `StorageDiff` | Изменения в storage (added/changed/removed) |
-| `AriaComponent` | ARIA-компонент после анализа (role, name, state, context) |
-| `DomComponent` | DOM-компонент (tag, testid, css, id, text, ariaLabel) |
-| `NetworkTrigger` | Паттерн сетевого запроса (method, urlPattern, shapes) |
-| `ComponentRecord` | Запись в реестре компонентов (id, selectors, actions, states, confidence) |
-| `ComponentRegistry` | Весь реестр компонентов |
-| `PageRegistry` | Маппинг URL → метаданные страницы + список компонентов |
+| `SessionMeta` | Session metadata (id, task, baseUrl, status, steps) |
+| `StepRecord` | Full record of a step: URL, action, before/after artifacts, status |
+| `ActionData` | Action description: type, element, value |
+| `ArtifactRefs` | References to artifact files (ARIA, DOM, network, storage, screenshot) |
+| `StorageDiff` | Storage changes (added/changed/removed) |
+| `AriaComponent` | ARIA component after analysis (role, name, state, context) |
+| `DomComponent` | DOM component (tag, testid, css, id, text, ariaLabel) |
+| `NetworkTrigger` | Network request pattern (method, urlPattern, shapes) |
+| `ComponentRecord` | Entry in the component registry (id, selectors, actions, states, confidence) |
+| `ComponentRegistry` | The entire component registry |
+| `PageRegistry` | Mapping of URL → page metadata + list of components |
 
 ---
 
-### `session-collector.ts` — класс `SessionCollector`
-Управляет файловой структурой одной сессии: создаёт директории, сохраняет шаги и артефакты.
+### `session-collector.ts` — the `SessionCollector` class
+Manages the file structure of a single session: creates directories, saves steps and artifacts.
 
-**Использование в `main/agent.ts`:** создаётся при старте сессии, метод `beginStep()`/`completeStep()` вызывается на каждом шаге.
+**Usage in `main/agent.ts`:** created at session start; the `beginStep()`/`completeStep()` method is called on every step.
 
-**Создаваемая структура:**
+**Structure created:**
 ```
 sessions/{sessionId}/
-├── session-meta.json         ← статус сессии + сводка шагов
+├── session-meta.json         ← session status + step summary
 ├── steps/
-│   ├── step-001.json         ← полная запись каждого шага
+│   ├── step-001.json         ← full record of each step
 │   └── ...
-├── analyzed/                 ← сюда пишут агенты pipeline/
+├── analyzed/                 ← written to by pipeline/ agents
 └── raw/
     ├── aria/                 ← step-NNN-aria.yaml
     ├── dom/                  ← step-NNN-dom.html
@@ -45,44 +45,44 @@ sessions/{sessionId}/
     └── screenshots/          ← step-NNN-{before|after}.webp
 ```
 
-**Ключевые методы:**
-- `init(task, baseUrl)` — создаёт директории, пишет session-meta.json
+**Key methods:**
+- `init(task, baseUrl)` — creates directories, writes session-meta.json
 - `nextStepId()` → `"step-001"`, `"step-002"` ...
-- `beginStep()` / `completeStep()` — жизненный цикл шага
-- `saveAriaSnapshot()`, `saveDomSnapshot()`, `saveNetwork()`, `saveStorage()`, `saveScreenshot()` — запись артефактов
-- `finishSession(status)` — финализация сессии
+- `beginStep()` / `completeStep()` — step lifecycle
+- `saveAriaSnapshot()`, `saveDomSnapshot()`, `saveNetwork()`, `saveStorage()`, `saveScreenshot()` — artifact writers
+- `finishSession(status)` — finalizes the session
 
 ---
 
 ### `dom-component-store.ts`
-Файловое хранилище описаний DOM-блоков. Заменяет коллекцию MongoDB `components`.
+File-based store for DOM block descriptions. Replaces the MongoDB `components` collection.
 
-**Файл данных:** `data/dom-components.json`  
-**Структура:** `URL → blockName → { blockName, contentHash, description, analyzedAt }`
+**Data file:** `data/dom-components.json`  
+**Structure:** `URL → blockName → { blockName, contentHash, description, analyzedAt }`
 
-**Экспорты:**
-- `upsertComponent(doc)` — создать/обновить компонент
-- `getComponent(url, blockName)` — получить по URL + имени блока
-- `findComponentByHash(contentHash)` — найти по хэшу (кросс-URL дедупликация)
-- `getComponentsByUrl(url)` — все компоненты страницы
+**Exports:**
+- `upsertComponent(doc)` — create/update a component
+- `getComponent(url, blockName)` — fetch by URL + block name
+- `findComponentByHash(contentHash)` — find by hash (cross-URL deduplication)
+- `getComponentsByUrl(url)` — all components on a page
 
-**Используется из:** `agents/dom-components/orchestrator.ts`
+**Used from:** `agents/dom-components/orchestrator.ts`
 
 ---
 
 ### `content-summary-store.ts`
-Файловый кэш AI-описаний контента (скриншоты, снапшоты).
+File-based cache of AI-generated content descriptions (screenshots, snapshots).
 
-**Файл данных:** `data/content-summaries.json`  
-**Ключ:** `"{key}__{kind}"` → текст описания
+**Data file:** `data/content-summaries.json`  
+**Key:** `"{key}__{kind}"` → description text
 
-**Экспорты:**
+**Exports:**
 - `getContentSummary(key, kind)` → `string | null`
 - `upsertContentSummary(key, kind, summary)` → `void`
 
 ---
 
-## Файлы данных (создаются в рантайме)
+## Data files (created at runtime)
 
 ```
 data/
@@ -91,5 +91,5 @@ data/
 
 sessions/
 └── {sessionId}/
-    └── ... (см. SessionCollector выше)
+    └── ... (see SessionCollector above)
 ```

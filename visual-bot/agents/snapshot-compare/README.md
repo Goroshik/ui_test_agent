@@ -1,23 +1,23 @@
 # agents/snapshot-compare/
 
-Агент визуального сравнения скриншотов (PNG/JPG).
+Visual comparison agent for screenshots (PNG/JPG).
 
-## Файлы
+## Files
 
-### `snapshot-compare-agent.ts` — классы `ScreenshotCompareAgent` / `SnapshotCompareAgent`
-Расширяет `BaseCompareAgent`. Сравнивает входящие скриншоты с baseline через `VisualDiff` (LLM-сравнение).
+### `snapshot-compare-agent.ts` — classes `ScreenshotCompareAgent` / `SnapshotCompareAgent`
+Extends `BaseCompareAgent`. Compares incoming screenshots against the baseline via `VisualDiff` (LLM-based comparison).
 
-**Директории:**
-- Входящие: `./screenshots/incoming/`
+**Directories:**
+- Incoming: `./screenshots/incoming/`
 - Baseline: `./screenshots/baseline/`
-- Изменения: `./screenshots/changes/`
+- Changes: `./screenshots/changes/`
 
-**Форматы файлов:** `.png`, `.jpg`
+**File formats:** `.png`, `.jpg`
 
-**Наследуемая логика (из BaseCompareAgent):**
-- Ротация baseline и changes файлов
-- `BASELINE_KEEP_COUNT` (default: 1) — сколько хранить baseline
-- `CHANGES_KEEP_COUNT` (default: 5) — сколько хранить changes
-- `CLEANUP_CHANGES_AFTER_PROCESS` (default: true) — очищать после обработки
+**Inherited logic (from BaseCompareAgent):**
+- Rotation of baseline and changes files
+- `BASELINE_KEEP_COUNT` (default: 1) — how many baseline files to keep
+- `CHANGES_KEEP_COUNT` (default: 5) — how many changes files to keep
+- `CLEANUP_CHANGES_AFTER_PROCESS` (default: true) — clean up after processing
 
-**Используется из:** `post-run/post-run-snapshot-compare-agent.ts`
+**Used from:** `post-run/post-run-snapshot-compare-agent.ts`

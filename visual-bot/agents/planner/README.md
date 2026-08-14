@@ -1,31 +1,31 @@
 # agents/planner/
 
-Агенты предварительного планирования — работают до запуска `main/agent.ts`.
+Pre-planning agents — run before `main/agent.ts` starts.
 
-## Файлы
+## Files
 
-### `planner-agent.ts` — класс `PlannerAgent`
-Генерирует пошаговый план выполнения задачи на основе пользовательского запроса + знаний из реестра.
+### `planner-agent.ts` — class `PlannerAgent`
+Generates a step-by-step task execution plan based on the user's request + knowledge from the registry.
 
-**Что делает:**
-- Принимает задачу и опциональный контекст памяти
-- Обогащает запрос знаниями о сайте (summary страницы из реестра, история посещений)
-- Возвращает пронумерованный список конкретных шагов с синтаксисом инструментов
+**What it does:**
+- Accepts a task and optional memory context
+- Enriches the request with site knowledge (page summary from the registry, visit history)
+- Returns a numbered list of concrete steps with tool syntax
 
-**Источники контекста (по приоритету):**
-1. Переданный контекст памяти
-2. Сводка страницы из реестра компонентов
-3. История посещений из памяти
+**Context sources (in priority order):**
+1. Passed-in memory context
+2. Page summary from the component registry
+3. Visit history from memory
 
 ---
 
-### `memory-analysis-agent.ts` — класс `MemoryAnalysisAgent`
-Анализирует базу знаний (реестр) и предлагает релевантные страницы и пути навигации для задачи.
+### `memory-analysis-agent.ts` — class `MemoryAnalysisAgent`
+Analyzes the knowledge base (registry) and suggests relevant pages and navigation paths for the task.
 
-**Что делает:**
-- Токенизирует задачу в ключевые слова
-- Скорит страницы реестра по совпадению ключевых слов
-- Возвращает текст с разделами: «Релевантные страницы», «Предложенный путь», «Известные ярлыки»
-- Ограничение: не более `MAX_PAGES_IN_CONTEXT = 12` страниц
+**What it does:**
+- Tokenizes the task into keywords
+- Scores registry pages by keyword match
+- Returns text with sections: "Relevant Pages", "Suggested Path", "Known Shortcuts"
+- Limit: no more than `MAX_PAGES_IN_CONTEXT = 12` pages
 
-**Используется:** вызывается перед `PlannerAgent`, чтобы передать ему релевантный контекст
+**Used:** called before `PlannerAgent`, to pass it relevant context
