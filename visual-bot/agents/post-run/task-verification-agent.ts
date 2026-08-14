@@ -48,7 +48,7 @@ export class TaskVerificationAgent {
   async verify(task: string, snapshot?: string | null): Promise<VerificationResult> {
     const text = snapshot?.trim() || (await this._readLastSnapshot());
     if (!text) {
-      return { success: false, reason: 'ARIA-снапшот не найден — невозможно проверить результат' };
+      return { success: false, reason: 'ARIA snapshot not found — cannot verify the result' };
     }
 
     console.log(`\n[Verifier] Checking task completion using ARIA snapshot (${text.length} chars)`);
@@ -83,7 +83,7 @@ export class TaskVerificationAgent {
     } catch {
       // If we can't parse JSON, treat as failure
       console.log(`[Verifier] Could not parse response: ${raw.slice(0, 200)}`);
-      return { success: false, reason: `Не удалось разобрать ответ верификатора: ${raw.slice(0, 100)}` };
+      return { success: false, reason: `Could not parse the verifier response: ${raw.slice(0, 100)}` };
     }
   }
 
