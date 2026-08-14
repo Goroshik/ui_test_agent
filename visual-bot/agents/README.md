@@ -1,36 +1,36 @@
 # agents/
 
-Корневая директория всех агентов visual-bot. Каждая подпапка — отдельная зона ответственности в общем пайплайне.
+Root directory for all visual-bot agents. Each subfolder is a separate area of responsibility in the overall pipeline.
 
-## Файлы в корне
+## Files in the root
 
 ### `base-compare-agent.ts`
-Абстрактный базовый класс для агентов сравнения (шаблонный метод). Инкапсулирует логику: чтение входящих файлов → сравнение с baseline → ротация файлов. Подклассы реализуют `readContent()` и `runDiff()`.
+Abstract base class for comparison agents (template method). Encapsulates the logic: read incoming files → compare with baseline → rotate files. Subclasses implement `readContent()` and `runDiff()`.
 
-Используется в: `snapshot-compare/`, `snapshot-text-compare/`
+Used in: `snapshot-compare/`, `snapshot-text-compare/`
 
-## Подпапки
+## Subfolders
 
-| Папка | Что делает |
+| Folder | What it does |
 |-------|-----------|
-| `main/` | Главный агент браузерной автоматизации (LLM + Playwright MCP) |
-| `planner/` | Планирование задач и анализ памяти перед запуском |
-| `pipeline/` | Пост-ран анализ: ARIA, DOM, сеть → реестр компонентов |
-| `dom-components/` | Двухэтапный анализ UI-блоков из ARIA-снапшотов |
-| `post-run/` | Оркестратор сравнений + верификация выполнения задачи |
-| `snapshot-compare/` | Визуальное сравнение скриншотов (PNG/JPG) |
-| `snapshot-text-compare/` | Текстовое сравнение ARIA-снапшотов (.txt) |
+| `main/` | Main browser automation agent (LLM + Playwright MCP) |
+| `planner/` | Task planning and memory analysis before a run |
+| `pipeline/` | Post-run analysis: ARIA, DOM, network → component registry |
+| `dom-components/` | Two-stage analysis of UI blocks from ARIA snapshots |
+| `post-run/` | Comparison orchestrator + task-completion verification |
+| `snapshot-compare/` | Visual comparison of screenshots (PNG/JPG) |
+| `snapshot-text-compare/` | Text comparison of ARIA snapshots (.txt) |
 
-## Общий поток выполнения
+## Overall execution flow
 
 ```
-[Пользователь даёт задачу]
+[User gives a task]
        ↓
-planner/ → генерирует план шагов
+planner/ → generates a step plan
        ↓
-main/agent.ts → выполняет шаги в браузере, собирает данные
+main/agent.ts → executes steps in the browser, collects data
        ↓
-pipeline/ → анализирует собранные данные → registry/
+pipeline/ → analyzes the collected data → registry/
        ↓
-post-run/ → сравнивает скриншоты/снапшоты + верифицирует результат
+post-run/ → compares screenshots/snapshots + verifies the result
 ```

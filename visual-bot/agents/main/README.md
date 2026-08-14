@@ -1,35 +1,35 @@
 # agents/main/
 
-Главный агент браузерной автоматизации.
+Main browser automation agent.
 
-## Файлы
+## Files
 
-### `agent.ts` — класс `Agent`
-Основной исполнительный агент. Управляет LLM-циклом, инструментами браузера и сбором данных для пайплайна.
+### `agent.ts` — `Agent` class
+The core executor agent. Manages the LLM loop, browser tools, and data collection for the pipeline.
 
-**Что делает:**
-- Запускает итеративный LLM-цикл (`run(prompt)`) до выполнения задачи или достижения `MAX_ITERATIONS`
-- Подключается к Playwright через MCP-сервер (`MCPClient`)
-- Выполняет 50+ браузерных инструментов (navigate, click, type, hover, snapshot и др.)
-- После каждого изменения страницы — делает скриншот и/или ARIA-снапшот
-- Собирает структурированные данные для пайплайна: ARIA, DOM, сеть, storage, скриншоты (`SessionCollector`)
-- Записывает каждый шаг в MongoDB
-- Детектирует зацикливание (loop detector)
+**What it does:**
+- Runs an iterative LLM loop (`run(prompt)`) until the task is complete or `MAX_ITERATIONS` is reached
+- Connects to Playwright via an MCP server (`MCPClient`)
+- Executes 50+ browser tools (navigate, click, type, hover, snapshot, etc.)
+- Takes a screenshot and/or an ARIA snapshot after every page change
+- Collects structured data for the pipeline: ARIA, DOM, network, storage, screenshots (`SessionCollector`)
+- Logs every step to MongoDB
+- Detects loops (loop detector)
 
-**Зависимости:**
-- `openai` — LLM-клиент (через OpenRouter по умолчанию, см. `llm-provider.ts`)
-- `mongodb` — запись шагов
+**Dependencies:**
+- `openai` — LLM client (via OpenRouter by default, see `llm-provider.ts`)
+- `mongodb` — step logging
 - `MCPClient` — Playwright MCP
-- `Screenshotter` — захват экрана
-- `SessionCollector` — сбор данных пайплайна
-- `registry-context`, `memory.ts` — контекст страницы и посещений
+- `Screenshotter` — screen capture
+- `SessionCollector` — pipeline data collection
+- `registry-context`, `memory.ts` — page and visit context
 
-**Переменные окружения:**
-- `OPENROUTER_API_KEY`, `OPENROUTER_MODEL` — подключение к OpenRouter (провайдер по умолчанию)
-- `MAIN_PROVIDER` / `LLM_PROVIDER` — `openrouter` (default) или `ollama`
-- `MAIN_MODEL` — модель для этой роли; нужна vision-модель, если включены скриншоты
-- `OLLAMA_BASE_URL`, `OLLAMA_API_KEY` — подключение к локальной Ollama (если выбрана)
+**Environment variables:**
+- `OPENROUTER_API_KEY`, `OPENROUTER_MODEL` — connection to OpenRouter (default provider)
+- `MAIN_PROVIDER` / `LLM_PROVIDER` — `openrouter` (default) or `ollama`
+- `MAIN_MODEL` — the model for this role; needs to be a vision model if screenshots are enabled
+- `OLLAMA_BASE_URL`, `OLLAMA_API_KEY` — connection to a local Ollama instance (if selected)
 - `MAX_ITERATIONS` (default: 60)
-- `PIPELINE_ENABLED` — включить сбор данных для пайплайна
+- `PIPELINE_ENABLED` — enable pipeline data collection
 - `SCREENSHOTS_ENABLED`, `SNAPSHOTS_ENABLED`
-- `DEBUG` — verbose логирование
+- `DEBUG` — verbose logging
