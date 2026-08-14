@@ -1,21 +1,21 @@
-# TODO: Agents Pipeline — сбор данных, сохранение, обновление
+# TODO: Agents Pipeline — data collection, persistence, updates
 
-## Контекст
-Система визуального регрессионного тестирования. Основной агент проходит по страницам,
-собирает артефакты, которые потом используют специализированные агенты для анализа.
+## Context
+Visual regression testing system. The main agent walks through pages,
+collects artifacts, which specialized agents then use for analysis.
 
 ---
 
-## Архитектура файлов данных
+## Data file architecture
 
-### Директории
+### Directories
 ```
 ./data/
   sessions/
-    <sessionId>/          # одна сессия = один проход
-      session-meta.json   # метаданные сессии
+    <sessionId>/          # one session = one pass
+      session-meta.json   # session metadata
       steps/
-        step-001.json     # данные одного шага
+        step-001.json     # data for one step
         step-002.json
         ...
       raw/
@@ -31,56 +31,56 @@
           step-001.webp
 
 ./registry/
-  components.json         # компонентный реестр (формируется Identity Agent)
-  pages.json              # известные страницы и их компоненты
-  selectors.json          # все известные селекторы (для быстрого lookup)
+  components.json         # component registry (built by the Identity Agent)
+  pages.json              # known pages and their components
+  selectors.json          # all known selectors (for fast lookup)
 ```
 
 ---
 
-## Шаг 1: Main Navigator Agent
+## Step 1: Main Navigator Agent
 
-### Задача
-Проходит по страницам согласно заданию, выполняет действия, на КАЖДОМ шаге собирает
-и сохраняет артефакты ПЕРЕД и ПОСЛЕ действия.
+### Task
+Walks through pages according to the task, performs actions, on EACH step collects
+and persists artifacts BEFORE and AFTER the action.
 
-### Что делать
+### What to do
 
-#### 1.1 Инициализация сессии
-При старте создать `session-meta.json`:
+#### 1.1 Session initialization
+On start, create `session-meta.json`:
 ```json
 {
   "sessionId": "<uuid>",
   "startedAt": "<ISO timestamp>",
-  "task": "<строка задания>",
+  "task": "<task string>",
   "baseUrl": "<url>",
   "status": "running",
   "steps": []
 }
 ```
 
-#### 1.2 На каждом шаге — ПЕРЕД действием
-Собрать и записать в `step-NNN.json`:
+#### 1.2 On each step — BEFORE the action
+Collect and write to `step-NNN.json`:
 ```json
 {
   "stepId": "step-001",
   "stepIndex": 1,
   "timestamp": "<ISO>",
-  "url": "<текущий url>",
+  "url": "<current url>",
   "action": {
     "type": "click | fill | navigate | select | hover",
-    "description": "<что делаем и зачем>",
+    "description": "<what we're doing and why>",
     "element": {
-      "testid": "<data-testid если есть>",
+      "testid": "<data-testid if present>",
       "ariaRole": "<role>",
       "ariaName": "<accessible name>",
       "tagName": "<tag>",
-      "text": "<innerText если кнопка/ссылка>",
+      "text": "<innerText if button/link>",
       "bbox": { "x": 0, "y": 0, "width": 0, "height": 0 },
-      "xpath": "<xpath до элемента>",
-      "cssPath": "<короткий css path>"
+      "xpath": "<xpath to the element>",
+      "cssPath": "<short css path>"
     },
-    "value": "<значение для fill/select>"
+    "value": "<value for fill/select>"
   },
   "before": {
     "ariaSnapshotFile": "raw/aria/step-001-aria.yaml",
@@ -92,37 +92,37 @@
 }
 ```
 
-#### 1.3 Сбор ARIA snapshot (перед действием)
-Использовать Playwright:
+#### 1.3 Collecting the ARIA snapshot (before the action)
+Use Playwright:
 ```javascript
-// Получить aria snapshot всей страницы
+// Get the aria snapshot of the whole page
 const ariaSnapshot = await page.locator('body').ariaSnapshot();
-// Записать в raw/aria/step-NNN-aria.yaml
+// Write to raw/aria/step-NNN-aria.yaml
 ```
-ВАЖНО: ariaSnapshot() возвращает YAML-строку с деревом ролей, имён и состояний.
-Это самый ценный источник для entity resolution.
+IMPORTANT: ariaSnapshot() returns a YAML string with a tree of roles, names, and states.
+This is the most valuable source for entity resolution.
 
-#### 1.4 Сбор DOM snapshot (перед действием)
+#### 1.4 Collecting the DOM snapshot (before the action)
 ```javascript
-// Сериализовать упрощённый DOM — только интерактивные элементы
+// Serialize a simplified DOM — interactive elements only
 const dom = await page.evaluate(() => {
   const selectors = [
     'button', 'a', 'input', 'select', 'textarea',
     '[role="button"]', '[role="link"]', '[role="tab"]',
     '[role="menuitem"]', '[data-testid]', '[aria-label]'
   ];
-  return document.querySelectorAll(selectors.join(',')).map... // собрать атрибуты
+  return document.querySelectorAll(selectors.join(',')).map... // collect attributes
 });
 ```
-Записать ТОЛЬКО интерактивные элементы, не весь HTML. Полный HTML — слишком большой.
-Формат: минимальный HTML или JSON-массив элементов с атрибутами.
+Write ONLY the interactive elements, not the whole HTML. Full HTML is too large.
+Format: minimal HTML or a JSON array of elements with attributes.
 
-Атрибуты для каждого элемента:
+Attributes for each element:
 - tagName, id, className, data-testid, aria-label, aria-role, name, type, value,
-  placeholder, href, disabled, checked, textContent (первые 100 символов)
+  placeholder, href, disabled, checked, textContent (first 100 characters)
 
-#### 1.5 Сбор Storage snapshot (перед действием)
-Через CDP session:
+#### 1.5 Collecting the Storage snapshot (before the action)
+Via a CDP session:
 ```javascript
 const client = await page.context().newCDPSession(page);
 
@@ -139,9 +139,9 @@ const storageData = await page.evaluate(() => ({
 // cookies
 const cookies = await page.context().cookies();
 ```
-Записать в `step-NNN-storage.json`.
+Write to `step-NNN-storage.json`.
 
-#### 1.6 Network listener — включить ДО начала шага
+#### 1.6 Network listener — enable BEFORE the step starts
 ```javascript
 const networkEvents = [];
 const requestHandler = (request) => {
@@ -165,7 +165,7 @@ const responseHandler = (response) => {
       timestamp: Date.now(),
       url: response.url(),
       status: response.status(),
-      // body читать только если content-type json и size < 50kb
+      // read the body only if content-type is json and size < 50kb
     });
   }
 };
@@ -173,7 +173,7 @@ page.on('request', requestHandler);
 page.on('response', responseHandler);
 ```
 
-#### 1.7 Скриншот ПЕРЕД действием
+#### 1.7 Screenshot BEFORE the action
 ```javascript
 await page.screenshot({
   path: `raw/screenshots/step-NNN-before.webp`,
@@ -182,14 +182,14 @@ await page.screenshot({
 });
 ```
 
-#### 1.8 ВЫПОЛНИТЬ ДЕЙСТВИЕ
+#### 1.8 PERFORM THE ACTION
 
-#### 1.9 ПОСЛЕ действия — собрать diff
-Ждём 500ms для завершения сетевых запросов, потом:
+#### 1.9 AFTER the action — collect the diff
+Wait 500ms for network requests to finish, then:
 
-1. Скриншот после
-2. Storage snapshot после
-3. Вычислить storage diff:
+1. Screenshot after
+2. Storage snapshot after
+3. Compute the storage diff:
 ```json
 {
   "added": { "orderId": "123" },
@@ -197,58 +197,58 @@ await page.screenshot({
   "removed": { "draftOrder": null }
 }
 ```
-4. Остановить network listener, сохранить события в `step-NNN-network.json`
-5. Записать все собранные данные в поле `after` в `step-NNN.json`
+4. Stop the network listener, save events to `step-NNN-network.json`
+5. Write all collected data into the `after` field in `step-NNN.json`
 
-#### 1.10 Обновить session-meta.json
-Добавить шаг в массив `steps` с кратким описанием и статусом.
+#### 1.10 Update session-meta.json
+Add the step to the `steps` array with a brief description and status.
 
 ---
 
-## Шаг 2: ARIA Analyzer Agent
+## Step 2: ARIA Analyzer Agent
 
-### Задача
-Читает все `step-NNN-aria.yaml` файлы и формирует список уникальных интерактивных
-компонент, встреченных на сессии.
+### Task
+Reads all `step-NNN-aria.yaml` files and builds a list of unique interactive
+components encountered during the session.
 
-### Что делать
+### What to do
 
-#### 2.1 Прочитать все aria файлы сессии
-Пройтись по `sessions/<sessionId>/raw/aria/`.
+#### 2.1 Read all aria files for the session
+Walk `sessions/<sessionId>/raw/aria/`.
 
-#### 2.2 Промпт для LLM
-Для каждого aria файла:
+#### 2.2 LLM prompt
+For each aria file:
 ```
-Ты анализируешь ARIA snapshot веб-страницы.
-Извлеки список ВСЕХ интерактивных элементов.
+You are analyzing an ARIA snapshot of a web page.
+Extract a list of ALL interactive elements.
 
-Для каждого элемента верни JSON:
+For each element return JSON:
 {
   "ariaRole": "button",
   "ariaName": "Checkout",
   "state": { "disabled": false, "checked": null, "expanded": null },
   "context": "inside form[name=cart]",
-  "pageUrl": "<url из мета>",
+  "pageUrl": "<url from meta>",
   "stepId": "<stepId>"
 }
 
-Верни только JSON массив, без пояснений.
+Return only a JSON array, with no explanations.
 ```
 
-#### 2.3 Сохранить результат
-Записать в `sessions/<sessionId>/analyzed/aria-components.json`.
+#### 2.3 Save the result
+Write to `sessions/<sessionId>/analyzed/aria-components.json`.
 
 ---
 
-## Шаг 3: DOM Analyzer Agent
+## Step 3: DOM Analyzer Agent
 
-### Задача
-Читает DOM snapshot файлы, извлекает элементы с их атрибутами.
+### Task
+Reads DOM snapshot files, extracts elements with their attributes.
 
-#### 3.1 Промпт для LLM
+#### 3.1 LLM prompt
 ```
-Ты анализируешь DOM snapshot веб-страницы. Дан список интерактивных элементов.
-Для каждого элемента извлеки:
+You are analyzing a DOM snapshot of a web page. You are given a list of interactive elements.
+For each element extract:
 {
   "tagName": "button",
   "testid": "checkout-btn",
@@ -261,23 +261,23 @@ await page.screenshot({
   "pageUrl": "<url>",
   "stepId": "<stepId>"
 }
-Верни только JSON массив.
+Return only a JSON array.
 ```
 
-#### 3.2 Сохранить
-Записать в `sessions/<sessionId>/analyzed/dom-components.json`.
+#### 3.2 Save
+Write to `sessions/<sessionId>/analyzed/dom-components.json`.
 
 ---
 
-## Шаг 4: Network Analyzer Agent
+## Step 4: Network Analyzer Agent
 
-### Задача
-Читает network логи и строит карту: какой UI элемент → какой API вызов.
+### Task
+Reads network logs and builds a map: which UI element → which API call.
 
-#### 4.1 Промпт для LLM
+#### 4.1 LLM prompt
 ```
-Дан лог сетевых запросов сессии. Каждый запрос имеет stepId.
-Для каждого шага определи:
+You are given a session's network request log. Each request has a stepId.
+For each step, determine:
 {
   "stepId": "step-007",
   "triggers": [
@@ -290,39 +290,39 @@ await page.screenshot({
     }
   ]
 }
-Верни только JSON массив.
+Return only a JSON array.
 ```
 
-#### 4.2 Сохранить
-Записать в `sessions/<sessionId>/analyzed/network-map.json`.
+#### 4.2 Save
+Write to `sessions/<sessionId>/analyzed/network-map.json`.
 
 ---
 
-## Шаг 5: Identity Resolution Agent
+## Step 5: Identity Resolution Agent
 
-### Задача
-Объединить записи из трёх источников в единые ComponentRecord.
-Подробное описание — в файле TODO-2-entity-resolution.md.
+### Task
+Merge records from the three sources into unified ComponentRecords.
+Detailed description in the file TODO-2-entity-resolution.md.
 
-#### 5.1 Input файлы
+#### 5.1 Input files
 - `analyzed/aria-components.json`
 - `analyzed/dom-components.json`
 - `analyzed/network-map.json`
-- `steps/step-NNN.json` (для element fingerprint из `action.element`)
+- `steps/step-NNN.json` (for the element fingerprint from `action.element`)
 
 #### 5.2 Output
-Обновить `registry/components.json` — добавить новые компоненты, обновить существующие.
+Update `registry/components.json` — add new components, update existing ones.
 
-### Логика обновления реестра (ВАЖНО)
-- Если компонент уже есть в реестре (совпадение по stable ID) — MERGE, не перезапись
-- При merge: добавлять новые selectors, не удалять существующие
-- Поле `confidence` повышать при каждом подтверждении
-- Поле `lastSeen` всегда обновлять
-- Поле `manualOverride: true` — не трогать автоматически НИКОГДА
+### Registry update logic (IMPORTANT)
+- If a component already exists in the registry (match by stable ID) — MERGE, don't overwrite
+- On merge: add new selectors, don't remove existing ones
+- Increase the `confidence` field on every confirmation
+- Always update the `lastSeen` field
+- The `manualOverride: true` field — NEVER touch automatically
 
 ---
 
-## Форматы файлов реестра
+## Registry file formats
 
 ### registry/components.json
 ```json
@@ -349,17 +349,17 @@ await page.screenshot({
 
 ---
 
-## Важные принципы
+## Key principles
 
-1. **Атомарность шага**: все файлы одного шага пишутся вместе. Если агент упал посередине —
-   шаг помечается как `status: incomplete` и не используется для анализа.
+1. **Step atomicity**: all files for one step are written together. If the agent crashes
+   partway through — the step is marked `status: incomplete` and is not used for analysis.
 
-2. **Идемпотентность**: повторный запуск агентов на тех же файлах не должен дублировать
-   записи в реестре.
+2. **Idempotency**: re-running the agents on the same files must not duplicate
+   records in the registry.
 
-3. **Не удалять старые данные**: сессии накапливаются. Удаление только руками.
+3. **Don't delete old data**: sessions accumulate. Deletion is manual only.
 
-4. **Размер файлов**: DOM snapshot не должен превышать 100KB. Если больше — обрезать до
-   первых 200 интерактивных элементов и записать `truncated: true`.
+4. **File size**: a DOM snapshot must not exceed 100KB. If it does — truncate to
+   the first 200 interactive elements and write `truncated: true`.
 
-5. **Таймауты**: после каждого действия ждать MIN(networkIdle, 2000ms) перед сбором after-данных.
+5. **Timeouts**: after each action, wait MIN(networkIdle, 2000ms) before collecting after-data.

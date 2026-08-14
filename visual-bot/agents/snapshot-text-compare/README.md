@@ -1,25 +1,25 @@
 # agents/snapshot-text-compare/
 
-Агент текстового сравнения ARIA-снапшотов (дерево доступности).
+Text comparison agent for ARIA snapshots (accessibility tree).
 
-## Файлы
+## Files
 
-### `snapshot-text-compare-agent.ts` — класс `SnapshotTextCompareAgent`
-Расширяет `BaseCompareAgent`. Сравнивает входящие текстовые снапшоты с baseline через `VisualTextDiff` (LLM-сравнение текста).
+### `snapshot-text-compare-agent.ts` — class `SnapshotTextCompareAgent`
+Extends `BaseCompareAgent`. Compares incoming text snapshots against the baseline via `VisualTextDiff` (LLM-based text comparison).
 
-**Директории:**
-- Входящие: `./screenshots/snapshots-incoming/`
+**Directories:**
+- Incoming: `./screenshots/snapshots-incoming/`
 - Baseline: `./screenshots/snapshots-baseline/`
-- Изменения: `./screenshots/snapshots-changes/`
+- Changes: `./screenshots/snapshots-changes/`
 
-**Форматы файлов:** `.txt`
+**File formats:** `.txt`
 
-**Наследуемая логика (из BaseCompareAgent):**
-- Ротация baseline и changes файлов
+**Inherited logic (from BaseCompareAgent):**
+- Rotation of baseline and changes files
 - `BASELINE_KEEP_COUNT` (default: 1)
 - `CHANGES_KEEP_COUNT` (default: 5)
 - `CLEANUP_CHANGES_AFTER_PROCESS` (default: true)
 
-**Отличие от snapshot-compare/:** работает с текстом (ARIA-дерево), а не изображениями. Использует `VisualTextDiff` вместо `VisualDiff`.
+**Difference from snapshot-compare/:** works with text (ARIA tree) rather than images. Uses `VisualTextDiff` instead of `VisualDiff`.
 
-**Используется из:** `post-run/post-run-snapshot-compare-agent.ts`
+**Used from:** `post-run/post-run-snapshot-compare-agent.ts`

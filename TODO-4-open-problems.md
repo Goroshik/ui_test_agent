@@ -1,111 +1,111 @@
-# TODO 4 — Открытые проблемы и edge cases
+# TODO 4 — Open problems and edge cases
 
-Этот файл описывает известные проблемы которые нужно решить.
-Каждая секция — отдельная задача с контекстом и направлением решения.
-
----
-
-## Проблема 1: 100KB лимит DOM snapshot может быть недостаточным
-
-### Контекст
-В TODO-1 прописано: если DOM snapshot > 100KB — обрезать до первых 200 интерактивных элементов и писать `truncated: true`. Но "первые 200" — это элементы в порядке DOM, не в порядке важности. На странице типа `/admin/reports` или в SPA с большой таблицей может быть 500+ интерактивных элементов, и нужные окажутся в хвосте.
-
-### Что нужно решить
-- Определить стратегию обрезки которая сохраняет нужные элементы
-- Не терять элемент с которым агент собирается взаимодействовать (он известен через fingerprint)
-- Понять нужно ли вообще хранить полный DOM или достаточно "окрестности" текущего действия
-
-### Направление решения
-Вместо "первые 200" — приоритетная выборка:
-1. Элемент из fingerprint текущего шага — обязательно
-2. Элементы в радиусе ~500px от bbox текущего элемента
-3. Элементы с data-testid или aria-label (семантически размеченные)
-4. Остальные до лимита
-
-Возможно стоит хранить не один DOM snapshot на шаг, а только "фокусную зону" — поддерево DOM вокруг взаимодействия. Это и компактнее, и точнее для identity resolution.
-
-Ещё вариант — хранить только ARIA snapshot как основной источник (он компактнее DOM), а DOM snapshot делать только для селекторов, не для анализа структуры.
+This file describes known problems that need to be solved.
+Each section is a separate task with context and a proposed direction for the solution.
 
 ---
 
-## Проблема 2: Элемент удалили или переместили
+## Problem 1: the 100KB DOM snapshot limit may not be enough
 
-### Контекст
-Реестр накапливается между прогонами. Компонент `cart-page__checkout-btn` был на `/cart`, но после редизайна его убрали или переместили в хедер. Identity Agent в следующем прогоне либо не найдёт его (создаст дубликат), либо найдёт по старому селектору неправильный элемент.
+### Context
+TODO-1 specifies: if the DOM snapshot exceeds 100KB — truncate to the first 200 interactive elements and write `truncated: true`. But "first 200" means elements in DOM order, not in order of importance. On a page like `/admin/reports`, or in an SPA with a large table, there can be 500+ interactive elements, and the ones actually needed may end up at the tail.
 
-### Что нужно решить
-- Обнаружить что компонент пропал
-- Обнаружить что компонент переехал (тот же смысл, другое место)
-- Не засорять реестр мёртвыми записями
-- Не ломать тесты которые на него ссылаются
+### What needs to be solved
+- Define a truncation strategy that preserves the elements that matter
+- Never lose the element the agent is about to interact with (it is known via its fingerprint)
+- Determine whether the full DOM even needs to be stored, or whether the "neighborhood" of the current action is enough
 
-### Направление решения
+### Proposed direction
+Instead of "first 200" — priority-based sampling:
+1. The element from the fingerprint of the current step — always included
+2. Elements within a ~500px radius of the current element's bbox
+3. Elements with a `data-testid` or `aria-label` (semantically marked up)
+4. Everything else, up to the limit
 
-**Обнаружение пропажи:**
-После каждого прогона для каждой страницы в `meta.json` сохраняем список компонентов которые были найдены. Если компонент числится за этой страницей в реестре, но не появился в прогоне — ставим `lastSeen: <дата>` и `missingInRuns: [runId]`. После N пропусков подряд — ставим `status: "possibly_removed"` и `needsReview: true`.
+It may be worth storing not a single DOM snapshot per step, but only the "focus zone" — the DOM subtree around the interaction. This is both more compact and more accurate for identity resolution.
 
-**Обнаружение переезда:**
-Если в новом прогоне появился компонент с таким же ariaRole + ariaName но на другой странице или в другом месте — это кандидат на merge. LLM решает: это переехавший компонент или новый похожий? Если confidence > 0.85 — merge с обновлением `pages` и `selectors`. Иначе — два отдельных компонента с флагом `needsReview: true` и `possibleDuplicateOf: "other-component-id"`.
+Another option — store only the ARIA snapshot as the primary source (it's more compact than the DOM), and produce a DOM snapshot only for selectors, not for structural analysis.
 
-**Что делать с тестами:**
-Тест файлы которые используют `status: "possibly_removed"` компонент — при следующей генерации выводить warning, не падать. Добавить в шапку теста:
+---
+
+## Problem 2: an element was removed or moved
+
+### Context
+The registry accumulates data across runs. The component `cart-page__checkout-btn` used to be on `/cart`, but after a redesign it was removed or moved into the header. In the next run, the Identity Agent will either fail to find it (creating a duplicate) or find the wrong element via the old selector.
+
+### What needs to be solved
+- Detect that a component has disappeared
+- Detect that a component has moved (same meaning, different location)
+- Avoid cluttering the registry with dead entries
+- Avoid breaking tests that reference it
+
+### Proposed direction
+
+**Detecting disappearance:**
+After each run, for each page in `meta.json` we store the list of components that were found. If a component is listed against that page in the registry but did not appear in the run — we set `lastSeen: <date>` and `missingInRuns: [runId]`. After N consecutive misses — we set `status: "possibly_removed"` and `needsReview: true`.
+
+**Detecting a move:**
+If a new run produces a component with the same ariaRole + ariaName but on a different page or in a different location — this is a merge candidate. The LLM decides: is this a moved component or a new, similar one? If confidence > 0.85 — merge, updating `pages` and `selectors`. Otherwise — two separate components, with a `needsReview: true` flag and `possibleDuplicateOf: "other-component-id"`.
+
+**What to do with tests:**
+Test files that use a component with `status: "possibly_removed"` — on the next generation, emit a warning instead of failing. Add to the top of the test:
 ```javascript
-// WARNING: компонент "cart-page__checkout-btn" не найден в последних 3 прогонах
-// Проверь registry/components.json → status: "possibly_removed"
+// WARNING: component "cart-page__checkout-btn" not found in the last 3 runs
+// Check registry/components.json → status: "possibly_removed"
 ```
 
 ---
 
-## Проблема 3: Очень много селекторов — нужна ли векторная БД
+## Problem 3: very many selectors — is a vector database needed
 
-### Контекст
-После десятков прогонов реестр может вырасти до тысяч компонентов. При identity resolution нужно быстро найти "есть ли уже такой компонент в реестре". Линейный перебор по JSON работает медленно. Кроме того, нечёткий поиск ("найди компонент похожий на этот") через JSON невозможен без LLM вызова на каждый элемент.
+### Context
+After dozens of runs, the registry can grow to thousands of components. During identity resolution we need to quickly check "does such a component already exist in the registry". A linear scan over JSON is slow. In addition, fuzzy search ("find a component similar to this one") is impossible over JSON without an LLM call for every element.
 
-### Что нужно решить
-- Быстрый lookup при identity resolution
-- Нечёткий поиск для обнаружения дублей и переехавших компонентов
-- Не усложнять стек без реальной необходимости
+### What needs to be solved
+- Fast lookup during identity resolution
+- Fuzzy search for detecting duplicates and moved components
+- Not overcomplicating the stack without a real need
 
-### Направление решения
+### Proposed direction
 
-**Сначала попробовать без векторов:**
-Для детерминированного матчинга по testid и ariaName достаточно инвертированного индекса в памяти:
+**First, try without vectors:**
+For deterministic matching by testid and ariaName, an in-memory inverted index is enough:
 ```json
-// registry/index.json — строится автоматически из components.json
+// registry/index.json — built automatically from components.json
 {
   "byTestid": { "checkout-btn": "cart-page__checkout-btn" },
   "byAriaName": { "checkout": ["cart-page__checkout-btn"] },
   "byUrlAndRole": { "/cart__button": ["cart-page__checkout-btn"] }
 }
 ```
-Этот индекс перестраивается при каждом обновлении реестра. Lookup — O(1). Для реестра до ~5000 компонентов этого достаточно.
+This index is rebuilt on every registry update. Lookup is O(1). For a registry of up to ~5000 components this is sufficient.
 
-**Когда добавлять векторную БД:**
-Только если детерминированный матчинг не справляется с нечёткими случаями — например, кнопка переименована с "Checkout" в "Place order" и нет testid. В этом случае embedding ariaName + context даст семантическое сходство.
+**When to add a vector database:**
+Only if deterministic matching cannot handle fuzzy cases — for example, a button renamed from "Checkout" to "Place order" with no testid. In that case, embedding ariaName + context would give semantic similarity.
 
-Вариант стека если дойдёт: `sqlite-vss` (SQLite с векторным расширением) — минимальный оверхед, файловая БД, не нужен отдельный сервис. Embedding через тот же local LLM что уже используется.
+A candidate stack, if it comes to that: `sqlite-vss` (SQLite with a vector extension) — minimal overhead, file-based database, no separate service needed. Embeddings via the same local LLM already in use.
 
-**Важно:** Векторный поиск не заменяет детерминированный — он дополняет его для нечётких случаев с низким confidence. Архитектура: сначала детерминированный lookup, при `confidence < 0.7` — дополнительный векторный поиск.
+**Important:** vector search does not replace deterministic matching — it complements it for fuzzy, low-confidence cases. Architecture: deterministic lookup first, and only at `confidence < 0.7` do an additional vector search.
 
 ---
 
-## Проблема 4: Переиспользование тестов — один раз написали, везде используем
+## Problem 4: test reuse — write once, use everywhere
 
-### Контекст
-Сейчас Test Gen Agent генерирует каждый флоу как отдельный файл с дублирующимся кодом. Логин нужен в 15 разных флоу — и в каждом одни и те же 10 строк. При изменении login API все 15 файлов нужно обновлять.
+### Context
+Currently the Test Gen Agent generates each flow as a separate file with duplicated code. Login is needed in 15 different flows — and each one has the same 10 lines. When the login API changes, all 15 files need to be updated.
 
-### Что нужно решить
-- Выделить переиспользуемые флоу в отдельные модули
-- Дать Test Gen Agent знать что логин уже написан — не генерировать заново
-- Обеспечить что переиспользуемые модули тоже обновляются при изменении реестра
+### What needs to be solved
+- Extract reusable flows into separate modules
+- Let the Test Gen Agent know that login is already written — don't regenerate it
+- Ensure reusable modules are also updated when the registry changes
 
-### Направление решения
+### Proposed direction
 
-**Разделить тесты на три слоя:**
+**Split tests into three layers:**
 
 ```
 tests/
-  shared/                          # переиспользуемые блоки (генерируются один раз)
+  shared/                          # reusable blocks (generated once)
     flows/
       login-flow.js                # cy.loginViaUI(), cy.loginViaAPI()
       cart-add-item.js             # cy.addItemToCart(productId)
@@ -114,21 +114,21 @@ tests/
       user-default.json
       cart-with-items.json
   
-  generated/                       # итоговые тесты (генерируются из shared + сценариев)
+  generated/                       # final tests (generated from shared + scenarios)
     e2e/
       cart-checkout.cy.js
       product-search.cy.js
 ```
 
-**Как Test Gen Agent узнаёт о shared блоках:**
+**How the Test Gen Agent learns about shared blocks:**
 
-В `registry/test-gen-config.json` добавить секцию:
+Add a section to `registry/test-gen-config.json`:
 ```json
 {
   "sharedFlows": [
     {
       "id": "login",
-      "description": "Авторизация пользователя",
+      "description": "User authentication",
       "triggerComponents": ["login-page__email-input", "login-page__submit-btn"],
       "cypressCommand": "cy.loginViaUI(email, password)",
       "file": "tests/shared/flows/login-flow.js"
@@ -137,57 +137,57 @@ tests/
 }
 ```
 
-Когда агент видит в сценарии шаги которые матчатся с `triggerComponents` из sharedFlow — он не генерирует код заново, а вставляет вызов команды `cy.loginViaUI()`.
+When the agent sees steps in a scenario that match `triggerComponents` from a sharedFlow, it does not regenerate the code — instead it inserts a call to the `cy.loginViaUI()` command.
 
-**Shared flow файл генерируется один раз** и потом только обновляется если изменились компоненты на которые он ссылается (по `registry-hash` механизму из TODO-3).
+**The shared flow file is generated once** and afterward is only updated if the components it references have changed (via the `registry-hash` mechanism from TODO-3).
 
 ---
 
-## Проблема 5: Чистые тесты, поднятие окружения, сброс БД
+## Problem 5: clean tests, environment bring-up, DB reset
 
-### Контекст
-Сгенерированные тесты сейчас мокают сеть через `cy.intercept`. Но иногда нужны настоящие интеграционные тесты — против реального бэкенда с реальной БД. Тогда нужно: поднять БД с набором тестовых данных, запустить тест, сбросить БД после. Плюс тесты не должны зависеть от состояния которое оставил предыдущий тест.
+### Context
+Currently generated tests mock the network via `cy.intercept`. But sometimes real integration tests are needed — against a real backend with a real database. That requires: bringing up a DB with a set of test data, running the test, resetting the DB afterward. In addition, tests must not depend on state left behind by a previous test.
 
-### Что нужно решить
-- Автоматический подъём окружения перед прогоном (сидинг БД тестовыми данными)
-- Изоляция между тестами (каждый тест работает с чистым state)
-- Сброс и восстановление БД после тестов которые пишут данные
-- Это не должно требовать ручных действий при запуске
+### What needs to be solved
+- Automatic environment bring-up before a run (seeding the DB with test data)
+- Isolation between tests (each test works with a clean state)
+- Resetting and restoring the DB after tests that write data
+- This must not require manual steps at run time
 
-### Направление решения
+### Proposed direction
 
-**Два режима тестирования — разные стратегии:**
+**Two testing modes — different strategies:**
 
-*Режим "mocked" (дефолтный):*
-Всё мокается через `cy.intercept`. БД не нужна. Быстро, изолировано, работает без окружения. Это то что генерируется сейчас.
+*"mocked" mode (default):*
+Everything is mocked via `cy.intercept`. No DB needed. Fast, isolated, works without an environment. This is what is generated today.
 
-*Режим "integrated":*
-Реальный бэкенд, реальная БД. Подходит для smoke-тестов и проверки критических флоу.
+*"integrated" mode:*
+Real backend, real DB. Suitable for smoke tests and verifying critical flows.
 
-**Для integrated режима нужен:**
+**For integrated mode we need:**
 
-`tests/support/db-setup.js` — модуль для управления состоянием:
+`tests/support/db-setup.js` — a module for managing state:
 ```javascript
-// Вызывается через cy.task() — Cypress умеет выполнять Node.js код через tasks
-// cypress/plugins/index.js регистрирует tasks
+// Invoked via cy.task() — Cypress can execute Node.js code through tasks
+// cypress/plugins/index.js registers the tasks
 
-// Примеры команд которые нужно реализовать:
-cy.task("db:seed", "checkout-scenario")   // залить тестовые данные
-cy.task("db:reset")                        // откатить к чистому состоянию
-cy.task("db:snapshot", "before-checkout") // сохранить снапшот состояния
-cy.task("db:restore", "before-checkout")  // восстановить снапшот
+// Examples of commands that need to be implemented:
+cy.task("db:seed", "checkout-scenario")   // load test data
+cy.task("db:reset")                        // roll back to a clean state
+cy.task("db:snapshot", "before-checkout") // save a state snapshot
+cy.task("db:restore", "before-checkout")  // restore a snapshot
 ```
 
-**Стратегия изоляции:**
+**Isolation strategy:**
 
-Не сбрасывать БД после каждого теста — это медленно. Вместо этого:
-- Каждый тест создаёт данные с уникальным префиксом (`test_<uuid>_user@example.com`)
-- После прогона одна задача чистит все записи с префиксом `test_`
-- Для тестов которые меняют глобальное состояние (настройки, флаги) — `db:snapshot` + `db:restore` в `beforeEach`/`afterEach`
+Don't reset the DB after every test — that's slow. Instead:
+- Each test creates data with a unique prefix (`test_<uuid>_user@example.com`)
+- After the run, a single job cleans up all records with the `test_` prefix
+- For tests that change global state (settings, flags) — `db:snapshot` + `db:restore` in `beforeEach`/`afterEach`
 
-**Поднятие окружения:**
+**Environment bring-up:**
 
-В `package.json` добавить скрипты:
+Add scripts to `package.json`:
 ```json
 {
   "scripts": {
@@ -200,12 +200,12 @@ cy.task("db:restore", "before-checkout")  // восстановить снапш
 }
 ```
 
-**Что генерирует Test Gen Agent для integrated режима:**
+**What the Test Gen Agent generates for integrated mode:**
 
-Когда `test-gen-config.json` содержит `"mode": "integrated"` — агент добавляет в каждый тест файл:
+When `test-gen-config.json` contains `"mode": "integrated"` — the agent adds to each test file:
 ```javascript
 before(() => { cy.task("db:seed", "scenario-name"); });
 after(() => { cy.task("db:reset"); });
 ```
 
-И создаёт `tests/fixtures/db-seeds/scenario-name.js` с набором данных для этого сценария — на основе storage snapshot из прогона (там были реальные значения которые использовал агент).
+And it creates `tests/fixtures/db-seeds/scenario-name.js` with the dataset for that scenario — based on the storage snapshot from the run (which held the real values used by the agent).

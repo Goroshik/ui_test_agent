@@ -1,30 +1,30 @@
 # agents/post-run/
 
-Пост-ран агенты: сравнение снапшотов и верификация выполнения задачи.
+Post-run agents: snapshot comparison and task-execution verification.
 
-## Файлы
+## Files
 
-### `post-run-snapshot-compare-agent.ts` — классы `PostRunCompareAgent` / `PostRunSnapshotCompareAgent` / `PostRunVisualAgent`
-Оркестратор сравнений. Делегирует работу двум специализированным агентам:
-- `ScreenshotCompareAgent` (из `snapshot-compare/`) — сравнивает PNG/JPG скриншоты
-- `SnapshotTextCompareAgent` (из `snapshot-text-compare/`) — сравнивает ARIA-снапшоты (.txt)
+### `post-run-snapshot-compare-agent.ts` — classes `PostRunCompareAgent` / `PostRunSnapshotCompareAgent` / `PostRunVisualAgent`
+Orchestrator for comparisons. Delegates work to two specialized agents:
+- `ScreenshotCompareAgent` (from `snapshot-compare/`) — compares PNG/JPG screenshots
+- `SnapshotTextCompareAgent` (from `snapshot-text-compare/`) — compares ARIA snapshots (.txt)
 
-Методы: `process()`, `processScreenshots()`, `processSnapshots()`
+Methods: `process()`, `processScreenshots()`, `processSnapshots()`
 
 ---
 
 ### `post-run-visual-agent.ts`
-Реэкспортирует `PostRunSnapshotCompareAgent` и `PostRunVisualAgent` как публичный интерфейс модуля. Сам логики не содержит.
+Re-exports `PostRunSnapshotCompareAgent` and `PostRunVisualAgent` as the module's public interface. Contains no logic of its own.
 
 ---
 
-### `task-verification-agent.ts` — класс `TaskVerificationAgent`
-Верифицирует выполнение задачи: смотрит на последний ARIA-снапшот страницы и решает, выполнена ли задача. Текстовый агент — vision-модель не нужна.
+### `task-verification-agent.ts` — class `TaskVerificationAgent`
+Verifies task execution: looks at the page's latest ARIA snapshot and decides whether the task was completed. A text agent — no vision model is needed.
 
-**Вход:** описание задачи + ARIA-снапшот (текст, из `Agent.getLastAriaSnapshot()`)
-**Выход:** `{ success: boolean, reason: string }` (ответы на русском)
-**Фолбэк:** если снапшот не передан — самый новый `.txt` из `./screenshots/snapshots-incoming/`
-**Поведение:** LLM строго оценивает, выполнена ли задача по дереву доступности (URL, заголовки, значения полей, алерты, открытые диалоги)
-**Лимит:** снапшот обрезается до `VERIFICATION_SNAPSHOT_MAX_CHARS` (default 20000), голова + хвост
+**Input:** task description + ARIA snapshot (text, from `Agent.getLastAriaSnapshot()`)
+**Output:** `{ success: boolean, reason: string }` (responses in Russian)
+**Fallback:** if no snapshot is passed — the newest `.txt` from `./screenshots/snapshots-incoming/`
+**Behavior:** the LLM strictly evaluates whether the task was completed based on the accessibility tree (URL, headings, field values, alerts, open dialogs)
+**Limit:** the snapshot is truncated to `VERIFICATION_SNAPSHOT_MAX_CHARS` (default 20000), head + tail
 
-**Используется:** как финальный шаг после выполнения задачи агентом
+**Used:** as the final step after the agent completes a task
