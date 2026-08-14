@@ -16,9 +16,9 @@
     "test:unit": "vitest run",
     "coverage": "vitest run --coverage",
     "crap:normalize": "node scripts/normalize-coverage-paths.cjs coverage/coverage-final.json coverage/coverage-final.norm.json",
-	"crap": "yarn crap:normalize && crap4ts -c coverage/coverage-final.norm.json",
-	"crap:changed": "yarn crap:normalize && crap4ts -c coverage/coverage-final.norm.json --changed-since origin/master",
-	"gate": "node scripts/gate.cjs",
+    "crap": "yarn crap:normalize && crap4ts -c coverage/coverage-final.norm.json",
+    "crap:changed": "yarn crap:normalize && crap4ts -c coverage/coverage-final.norm.json --changed-since origin/master",
+    "gate": "node scripts/gate.cjs",
     "mutation": "stryker run",
     "gate:quick": "yarn typecheck && yarn lint"
   },
