@@ -1,59 +1,59 @@
 # agents/pipeline/
 
-Пост-ран пайплайн анализа. Запускается после завершения `main/agent.ts`. Обрабатывает собранные данные и строит реестр компонентов.
+Post-run analysis pipeline. Runs after `main/agent.ts` completes. Processes the collected data and builds the component registry.
 
-## Порядок выполнения
+## Execution order
 
 ```
-Шаги 2-4 — параллельно:
+Steps 2-4 — in parallel:
   aria-analyzer-agent    → analyzed/aria-components.json
   dom-analyzer-agent     → analyzed/dom-components.json
   network-analyzer-agent → analyzed/network-map.json
 
-Шаг 5 — после шагов 2-4:
+Step 5 — after steps 2-4:
   identity-resolution-agent → registry/components.json
                                registry/pages.json
 ```
 
-(Шаг 1 — сбор данных в `main/agent.ts` через `SessionCollector`)
+(Step 1 — data collection in `main/agent.ts` via `SessionCollector`)
 
-## Файлы
+## Files
 
-### `pipeline-runner.ts` — класс `PipelineRunner`
-Оркестратор пайплайна. Запускает шаги 2-4 параллельно, затем шаг 5 последовательно.
-
----
-
-### `aria-analyzer-agent.ts` — класс `AriaAnalyzerAgent` (Шаг 2)
-**Вход:** `raw/aria/*-aria.yaml`  
-**Выход:** `analyzed/aria-components.json`  
-Извлекает интерактивные ARIA-компоненты: ariaRole, ariaName, state (disabled/checked/expanded), context, pageUrl, stepId.
+### `pipeline-runner.ts` — class `PipelineRunner`
+Pipeline orchestrator. Runs steps 2-4 in parallel, then step 5 sequentially.
 
 ---
 
-### `dom-analyzer-agent.ts` — класс `DomAnalyzerAgent` (Шаг 3)
-**Вход:** `raw/dom/*-dom.html`  
-**Выход:** `analyzed/dom-components.json`  
-Извлекает атрибуты DOM-элементов для генерации селекторов: tagName, testid, cssSelector, id, name, type, text, ariaLabel, pageUrl, stepId.
+### `aria-analyzer-agent.ts` — class `AriaAnalyzerAgent` (Step 2)
+**Input:** `raw/aria/*-aria.yaml`  
+**Output:** `analyzed/aria-components.json`  
+Extracts interactive ARIA components: ariaRole, ariaName, state (disabled/checked/expanded), context, pageUrl, stepId.
 
 ---
 
-### `network-analyzer-agent.ts` — класс `NetworkAnalyzerAgent` (Шаг 4)
-**Вход:** `raw/network/*-network.json`  
-**Выход:** `analyzed/network-map.json`  
-Сопоставляет UI-взаимодействия с API-вызовами. Фильтрует шум (аналитика, CDN, шрифты). Обрабатывает батчами по 10 шагов.  
-Поля: stepId, method, urlPattern, requestPayloadShape, expectedStatus, responseShape.
+### `dom-analyzer-agent.ts` — class `DomAnalyzerAgent` (Step 3)
+**Input:** `raw/dom/*-dom.html`  
+**Output:** `analyzed/dom-components.json`  
+Extracts DOM element attributes for selector generation: tagName, testid, cssSelector, id, name, type, text, ariaLabel, pageUrl, stepId.
 
 ---
 
-### `identity-resolution-agent.ts` — класс `IdentityResolutionAgent` (Шаг 5)
-**Вход:** steps/*.json + три analyzed/*.json файла  
-**Выход:** `registry/components.json`, `registry/pages.json`  
-Ключевой агент: матчит «якоря» (интерактивные элементы) с ARIA/DOM/Network данными и строит реестр.
+### `network-analyzer-agent.ts` — class `NetworkAnalyzerAgent` (Step 4)
+**Input:** `raw/network/*-network.json`  
+**Output:** `analyzed/network-map.json`  
+Maps UI interactions to API calls. Filters out noise (analytics, CDN, fonts). Processes in batches of 10 steps.  
+Fields: stepId, method, urlPattern, requestPayloadShape, expectedStatus, responseShape.
 
-**Стратегия матчинга:**
-- ARIA: строгий (role+name) → средний (только name) → LLM fallback
-- DOM: строгий (testid) → средний (tagName+text или ariaLabel) → LLM fallback
+---
 
-**Уровни уверенности:** high, medium, low  
-**Формат ID компонента:** `{pageSlug}__{componentSlug}` (макс. 80 символов)
+### `identity-resolution-agent.ts` — class `IdentityResolutionAgent` (Step 5)
+**Input:** steps/*.json + the three analyzed/*.json files  
+**Output:** `registry/components.json`, `registry/pages.json`  
+Key agent: matches "anchors" (interactive elements) against ARIA/DOM/Network data and builds the registry.
+
+**Matching strategy:**
+- ARIA: strict (role+name) → medium (name only) → LLM fallback
+- DOM: strict (testid) → medium (tagName+text or ariaLabel) → LLM fallback
+
+**Confidence levels:** high, medium, low  
+**Component ID format:** `{pageSlug}__{componentSlug}` (max 80 characters)

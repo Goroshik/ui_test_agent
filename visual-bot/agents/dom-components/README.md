@@ -1,35 +1,35 @@
 # agents/dom-components/
 
-Двухэтапный анализ UI-блоков из ARIA-снапшотов. Разбивает снапшот страницы на именованные компоненты и генерирует их описания.
+Two-stage analysis of UI blocks from ARIA snapshots. Splits a page snapshot into named components and generates descriptions for them.
 
-## Файлы
+## Files
 
 ### `types.ts`
-Интерфейс `ComponentBlock`: `{ blockName: string, content: string }`.
+`ComponentBlock` interface: `{ blockName: string, content: string }`.
 
 ---
 
 ### `hasher.ts` — `hashContent()`
-MD5-хэш содержимого блока. Используется для дедупликации — блоки с одинаковым хэшем не перегенерируются.
+MD5 hash of a block's content. Used for deduplication — blocks with an unchanged hash are not regenerated.
 
 ---
 
-### `splitter.ts` — класс `ComponentSplitter` (Этап 1)
-LLM разбивает ARIA-снапшот на именованные UI-блоки (navbar, sidebar, main-content, footer и др.).  
-Метод: `split(snapshot)` → `ComponentBlock[]`
+### `splitter.ts` — `ComponentSplitter` class (Stage 1)
+The LLM splits the ARIA snapshot into named UI blocks (navbar, sidebar, main-content, footer, etc.).  
+Method: `split(snapshot)` → `ComponentBlock[]`
 
 ---
 
-### `analyzer.ts` — класс `ComponentAnalyzer` (Этап 2)
-LLM генерирует человекочитаемое описание (3-5 предложений) для каждого блока.  
-Метод: `describe(block)` → `string`
+### `analyzer.ts` — `ComponentAnalyzer` class (Stage 2)
+The LLM generates a human-readable description (3-5 sentences) for each block.  
+Method: `describe(block)` → `string`
 
 ---
 
-### `orchestrator.ts` — класс `ComponentOrchestrator`
-Оркестрирует весь процесс split → analyze с оптимизациями:
-1. Пропускает блоки с неизменённым хэшем
-2. Переиспользует описания с других URL если контент идентичен
-3. Сохраняет новые описания в БД (`dom-component-store`)
+### `orchestrator.ts` — `ComponentOrchestrator` class
+Orchestrates the whole split → analyze process with optimizations:
+1. Skips blocks whose hash is unchanged
+2. Reuses descriptions from other URLs if the content is identical
+3. Saves new descriptions to the DB (`dom-component-store`)
 
-**Используется из:** `main/agent.ts` — после каждого снапшота страницы
+**Used from:** `main/agent.ts` — after every page snapshot

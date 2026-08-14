@@ -54,7 +54,7 @@ beforeEach(() => {
   vi.spyOn(console, 'log').mockImplementation(() => undefined);
   // Default: nothing on disk, so only an explicitly passed snapshot is used.
   existsSync.mockReturnValue(false);
-  respondWith('{"success": true, "reason": "готово"}');
+  respondWith('{"success": true, "reason": "done"}');
 });
 
 afterEach(() => {
@@ -188,34 +188,34 @@ describe('TaskVerificationAgent.verify — disk fallback', () => {
 
 describe('TaskVerificationAgent.verify — response parsing', () => {
   it('reports success straight from the JSON body', async () => {
-    respondWith('{"success": true, "reason": "страница загрузилась"}');
+    respondWith('{"success": true, "reason": "page loaded"}');
 
     await expect(agent().verify('task', 'snapshot')).resolves.toEqual({
       success: true,
-      reason: 'страница загрузилась',
+      reason: 'page loaded',
     });
   });
 
   it('reports failure straight from the JSON body', async () => {
-    respondWith('{"success": false, "reason": "форма не отправлена"}');
+    respondWith('{"success": false, "reason": "form was not submitted"}');
 
     await expect(agent().verify('task', 'snapshot')).resolves.toEqual({
       success: false,
-      reason: 'форма не отправлена',
+      reason: 'form was not submitted',
     });
   });
 
   it('strips markdown fences around the JSON', async () => {
-    respondWith('```json\n{"success": true, "reason": "ок"}\n```');
+    respondWith('```json\n{"success": true, "reason": "ok"}\n```');
 
     await expect(agent().verify('task', 'snapshot')).resolves.toEqual({
       success: true,
-      reason: 'ок',
+      reason: 'ok',
     });
   });
 
   it('coerces a non-boolean success field', async () => {
-    respondWith('{"success": "yes", "reason": "ок"}');
+    respondWith('{"success": "yes", "reason": "ok"}');
     await expect(agent().verify('task', 'snapshot')).resolves.toHaveProperty('success', true);
   });
 

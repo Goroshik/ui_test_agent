@@ -1,31 +1,31 @@
-сделались скрины, но нет записей в memory
+screenshots got taken, but there are no records in memory
 
 
 
-нужно сделать отдельного агента, который будет проходит по скринам и обновлять память и который будет запускатся руками отдельно
+need to make a separate agent that will go through the screenshots and update memory, and that will be run manually, separately
 
 
 
-Я не хочу привязывать память к скринам, я хочу привзыватся к урлам
+I don't want to tie memory to screenshots, I want to tie it to URLs
 
-и возможно имеет смысл хранить отдельно инфо о том, что находится на страницах
+and maybe it makes sense to store info about what's on the pages separately
 
 
-=== АНАЛИЗАТОР ПЕРЕПИСКИ (loop detector) ===
+=== CONVERSATION ANALYZER (loop detector) ===
 
-[ ] Создать анализатор зависания агента:
-    - каждые 10 сообщений брать всю переписку
-    - проверять последние 3+ шага на повторение одного и того же действия
-      (например "нажать на поле", "выбрать данные")
-    - при обнаружении зависания — останавливать выполнение основной задачи
+[ ] Create an agent hang detector:
+    - every 10 messages, take the whole conversation
+    - check the last 3+ steps for repetition of the same action
+      (for example "click on field", "select data")
+    - when a hang is detected — stop execution of the main task
 
-[ ] Добавить MongoDB:
-    - хранить историю переписок
-    - хранить обнаруженные петли (loop events)
-    - хранить память об URL и страницах
+[ ] Add MongoDB:
+    - store conversation history
+    - store detected loops (loop events)
+    - store memory about URLs and pages
 
-[ ] Связать анализатор зависания с анализатором шагов:
-    - при обнаружении петли — не просто остановить, а попробовать решить
-    - анализатор шагов подсказывает конкретное действие:
-      какой инструмент использовать или как именно нажать кнопку
-    - передавать контекст петли в анализатор шагов для генерации подсказки
+[ ] Link the hang detector with the step analyzer:
+    - when a loop is detected — don't just stop, try to resolve it
+    - the step analyzer suggests a specific action:
+      which tool to use or exactly how to click the button
+    - pass the loop context to the step analyzer to generate a hint

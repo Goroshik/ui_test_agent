@@ -1,26 +1,26 @@
-# TODO: Entity Resolution — как понять что это один и тот же компонент
+# TODO: Entity Resolution — how to determine that this is the same component
 
-## Проблема
-Три источника (ARIA, DOM, Network) описывают одни и те же элементы разным языком.
-Нужно надёжно склеить их в одну запись ComponentRecord.
+## Problem
+Three sources (ARIA, DOM, Network) describe the same elements in different languages.
+We need to reliably merge them into a single ComponentRecord entry.
 
-Пример: один элемент описан так в трёх источниках:
+Example: one element is described like this across three sources:
 - ARIA:    `button[name="Checkout"]`
 - DOM:     `<button data-testid="checkout-btn" class="btn-primary">`
 - Network: `step-007 → POST /api/checkout`
 
 ---
 
-## Алгоритм Identity Resolution
+## Identity Resolution Algorithm
 
-### Этап 1: Anchor Matching (детерминированный, без LLM)
+### Stage 1: Anchor Matching (deterministic, no LLM)
 
-Основная идея: в `step-NNN.json` записан `action.element` — fingerprint элемента
-в момент взаимодействия. Это единственная запись где точно известно ЧТО за элемент
-вызвал сетевые события.
+The core idea: `step-NNN.json` records `action.element` — a fingerprint of the element
+at the moment of interaction. This is the only record where we know exactly WHICH element
+triggered the network events.
 
-#### 1.1 Построить anchor index
-Для каждого шага собрать anchor:
+#### 1.1 Build the anchor index
+For each step, collect the anchor:
 ```javascript
 const anchor = {
   stepId: step.stepId,
@@ -33,36 +33,36 @@ const anchor = {
 };
 ```
 
-#### 1.2 Сопоставить с ARIA snapshot
-Искать в `aria-components.json` запись где `stepId == anchor.stepId` И одно из:
+#### 1.2 Match against the ARIA snapshot
+Search `aria-components.json` for a record where `stepId == anchor.stepId` AND one of:
 - `ariaRole == anchor.ariaRole` + `ariaName == anchor.ariaName` → STRONG MATCH
-- только `ariaName == anchor.ariaName` → WEAK MATCH
+- only `ariaName == anchor.ariaName` → WEAK MATCH
 
-#### 1.3 Сопоставить с DOM snapshot
-Искать в `dom-components.json` запись где `stepId == anchor.stepId` И одно из:
-- `testid == anchor.testid` (если testid не null) → STRONG MATCH
+#### 1.3 Match against the DOM snapshot
+Search `dom-components.json` for a record where `stepId == anchor.stepId` AND one of:
+- `testid == anchor.testid` (if testid is not null) → STRONG MATCH
 - `tagName == anchor.tagName` + `text == anchor.text` → MEDIUM MATCH
 - `ariaLabel == anchor.ariaName` → MEDIUM MATCH
 
-#### 1.4 Сопоставить с Network
-Искать в `network-map.json` запись где `stepId == anchor.stepId` → прямое совпадение.
-(Сетевые события уже привязаны к stepId при сборе.)
+#### 1.4 Match against Network
+Search `network-map.json` for a record where `stepId == anchor.stepId` → direct match.
+(Network events are already tied to stepId during collection.)
 
 ---
 
-### Этап 2: Canonical ID Generation
+### Stage 2: Canonical ID Generation
 
-После сопоставления нужно создать стабильный ID компонента для реестра.
+After matching, we need to generate a stable component ID for the registry.
 
-#### Правило генерации canonical ID
-Формат: `<page-slug>__<component-slug>`
+#### Canonical ID generation rule
+Format: `<page-slug>__<component-slug>`
 
 ```javascript
 function generateCanonicalId(anchor, url) {
   // page slug: /cart → "cart", /products/123 → "products-detail"
   const pageSlug = urlToSlug(url);
 
-  // component slug: приоритет testid > ariaName > text
+  // component slug: priority is testid > ariaName > text
   const componentSlug = anchor.testid
     ? kebabCase(anchor.testid)
     : anchor.ariaName
@@ -73,59 +73,59 @@ function generateCanonicalId(anchor, url) {
 }
 ```
 
-Примеры:
+Examples:
 - `/cart` + testid `checkout-btn` → `cart__checkout-btn`
 - `/` + ariaName `Open menu` → `home__open-menu`
-- `/products` + button без id → `products__button-a3f2`
+- `/products` + button without id → `products__button-a3f2`
 
 ---
 
-### Этап 3: LLM Merge Agent (для неоднозначных случаев)
+### Stage 3: LLM Merge Agent (for ambiguous cases)
 
-Запускать LLM только когда детерминированный алгоритм не дал STRONG MATCH.
+Only invoke the LLM when the deterministic algorithm did not produce a STRONG MATCH.
 
-#### 3.1 Промпт для LLM разрешения неоднозначностей
+#### 3.1 Prompt for LLM disambiguation
 
 ```
-Ты агент сопоставления UI компонентов.
+You are a UI component matching agent.
 
-Дан anchor (элемент из шага взаимодействия):
+Given an anchor (the element from the interaction step):
 <anchor_json>
 
-Дан список кандидатов из ARIA snapshot этого шага:
+Given a list of candidates from the ARIA snapshot of this step:
 <aria_candidates_json>
 
-Дан список кандидатов из DOM snapshot этого шага:
+Given a list of candidates from the DOM snapshot of this step:
 <dom_candidates_json>
 
-Твоя задача: определить, какой кандидат из ARIA и какой из DOM описывают тот же
-элемент что и anchor.
+Your task: determine which candidate from ARIA and which from DOM describe the same
+element as the anchor.
 
-Правила:
-1. Если не уверен — укажи confidence: "low" и объясни почему.
-2. Если кандидатов нет — верни null.
-3. Не угадывай. Лучше null чем неправильный match.
+Rules:
+1. If unsure — set confidence: "low" and explain why.
+2. If there are no candidates — return null.
+3. Do not guess. Null is better than an incorrect match.
 
-Верни JSON:
+Return JSON:
 {
   "ariaMatch": { "index": 0, "confidence": "high|medium|low" },
   "domMatch": { "index": 2, "confidence": "high|medium|low" },
-  "reasoning": "кратко почему"
+  "reasoning": "brief reason"
 }
 ```
 
-#### 3.2 Когда НЕ запускать LLM
-- Если на странице только 1 кандидат с нужной ролью → брать автоматически
-- Если testid совпал → брать автоматически
-- Если общий confidence уже "high" → не тратить токены
+#### 3.2 When NOT to invoke the LLM
+- If there is only 1 candidate on the page with the required role → take it automatically
+- If the testid matches → take it automatically
+- If overall confidence is already "high" → don't spend tokens
 
 ---
 
-### Этап 4: Формирование ComponentRecord
+### Stage 4: Building the ComponentRecord
 
-После успешного сопоставления собрать итоговую запись.
+After a successful match, assemble the final record.
 
-#### 4.1 Структура ComponentRecord
+#### 4.1 ComponentRecord structure
 
 ```typescript
 interface ComponentRecord {
@@ -135,16 +135,16 @@ interface ComponentRecord {
   componentType: string;         // "button" | "input" | "link" | "form" | "modal" | etc
 
   // WHERE
-  pages: string[];               // ["/cart", "/checkout/step1"] — на каких страницах встречался
+  pages: string[];               // ["/cart", "/checkout/step1"] — pages where it appeared
   lastSeen: string;              // ISO timestamp
 
-  // HOW TO SELECT (в порядке надёжности)
+  // HOW TO SELECT (in order of reliability)
   selectors: {
-    preferred: string;           // лучший селектор для Cypress
+    preferred: string;           // best selector for Cypress
     aria: string;                // "button[name='Checkout']"
     testid: string | null;       // "[data-testid='checkout-btn']"
     css: string | null;          // ".btn-primary.checkout-button"
-    xpath: string | null;        // только как последний fallback
+    xpath: string | null;        // only as a last-resort fallback
   };
 
   // WHAT IT DOES
@@ -158,7 +158,7 @@ interface ComponentRecord {
     variants?: string[];         // ["default", "loading", "disabled"]
   };
 
-  // ASSERTIONS (что проверять после взаимодействия)
+  // ASSERTIONS (what to check after interaction)
   assertions: {
     pre_interaction: string[];   // ["be.visible", "be.enabled"]
     post_interaction: string[];  // ["url include /confirmation", "network 200"]
@@ -166,22 +166,22 @@ interface ComponentRecord {
 
   // META
   confidence: "high" | "medium" | "low";
-  seenCount: number;             // сколько раз встречался
-  manualOverride: boolean;       // true = не трогать автоматически
-  notes: string;                 // место для ручных заметок
+  seenCount: number;             // how many times it was seen
+  manualOverride: boolean;       // true = don't touch automatically
+  notes: string;                 // place for manual notes
 }
 
 interface ComponentAction {
   type: "click" | "fill" | "select" | "hover" | "focus";
-  value?: string;                // для fill/select
+  value?: string;                // for fill/select
 
   // Network side effects
   network?: {
     method: string;              // "POST"
-    urlPattern: string;          // "/api/checkout" или regex
-    requestShape?: object;       // примерная форма payload
+    urlPattern: string;          // "/api/checkout" or a regex
+    requestShape?: object;       // approximate payload shape
     expectedStatus: number;      // 200
-    responseShape?: object;      // примерная форма ответа
+    responseShape?: object;      // approximate response shape
   };
 
   // Storage side effects
@@ -192,7 +192,7 @@ interface ComponentAction {
 
   // Navigation side effects
   navigation?: {
-    to: string;                  // "/confirmation" или "same page"
+    to: string;                  // "/confirmation" or "same page"
     condition?: string;          // "on success"
   };
 }
@@ -200,15 +200,15 @@ interface ComponentAction {
 
 ---
 
-### Этап 5: Merge Strategy (обновление существующей записи)
+### Stage 5: Merge Strategy (updating an existing record)
 
-Когда компонент уже есть в реестре и мы нашли его снова:
+When a component already exists in the registry and we found it again:
 
-#### 5.1 Правила merge
+#### 5.1 Merge rules
 
 ```javascript
 function mergeComponentRecord(existing, newData) {
-  // НИКОГДА не трогать если manualOverride
+  // NEVER touch it if manualOverride is set
   if (existing.manualOverride) return existing;
 
   return {
@@ -217,19 +217,19 @@ function mergeComponentRecord(existing, newData) {
     // pages: union
     pages: [...new Set([...existing.pages, ...newData.pages])],
 
-    // selectors: добавлять новые, не удалять старые
+    // selectors: add new ones, don't remove old ones
     selectors: {
-      preferred: existing.selectors.preferred, // не менять preferred автоматически
+      preferred: existing.selectors.preferred, // don't change preferred automatically
       aria: newData.selectors.aria || existing.selectors.aria,
       testid: existing.selectors.testid || newData.selectors.testid,
       css: existing.selectors.css || newData.selectors.css,
       xpath: existing.selectors.xpath || newData.selectors.xpath,
     },
 
-    // actions: добавлять новые паттерны, не дублировать
+    // actions: add new patterns, don't duplicate
     actions: mergeActions(existing.actions, newData.actions),
 
-    // states: merge объектов
+    // states: merge the objects
     states: { ...existing.states, ...newData.states },
 
     // assertions: union
@@ -244,7 +244,7 @@ function mergeComponentRecord(existing, newData) {
       ])],
     },
 
-    // meta: обновить
+    // meta: update
     confidence: upgradeConfidence(existing.confidence, newData.confidence),
     seenCount: existing.seenCount + 1,
     lastSeen: new Date().toISOString(),
@@ -252,48 +252,48 @@ function mergeComponentRecord(existing, newData) {
 }
 ```
 
-#### 5.2 Как mergeActions
-Две actions считаются дублями если совпадают `type` + `network.urlPattern`.
-Если дубль — взять с более высоким confidence, остальные поля merge.
+#### 5.2 How mergeActions works
+Two actions are considered duplicates if their `type` + `network.urlPattern` match.
+If it's a duplicate — take the one with higher confidence, merge the remaining fields.
 
 ---
 
-### Этап 6: Preferred Selector Logic
+### Stage 6: Preferred Selector Logic
 
-Определить `selectors.preferred` для Cypress — самый надёжный.
+Determine `selectors.preferred` for Cypress — the most reliable one.
 
-#### Приоритет:
-1. `[data-testid="..."]` — если есть, всегда предпочтительнее
-2. `[aria-label="..."]` — если уникален на странице
-3. `role + name` через `cy.findByRole` (testing-library) — семантически стабилен
-4. `#id` — только если id не динамический (не `input-1234-abc`)
-5. `.class` — только если класс явно семантический, не утилитарный
-6. `xpath` — только как последний резорт
+#### Priority:
+1. `[data-testid="..."]` — if present, always preferred
+2. `[aria-label="..."]` — if unique on the page
+3. `role + name` via `cy.findByRole` (testing-library) — semantically stable
+4. `#id` — only if the id is not dynamic (not `input-1234-abc`)
+5. `.class` — only if the class is clearly semantic, not utilitarian
+6. `xpath` — only as a last resort
 
-#### Проверка уникальности (через DOM snapshot)
+#### Uniqueness check (via DOM snapshot)
 ```javascript
-// Считать сколько элементов матчит селектор на странице
-// Если > 1 — не использовать как preferred, искать более специфичный
+// Count how many elements the selector matches on the page
+// If > 1 — don't use it as preferred, look for a more specific one
 ```
 
 ---
 
-### Итог: что делает Identity Resolution Agent пошагово
+### Summary: what the Identity Resolution Agent does step by step
 
 ```
-1. Прочитать все step-NNN.json → построить anchor index
-2. Прочитать aria-components.json, dom-components.json, network-map.json
-3. Для каждого anchor:
-   a. Детерминированный матчинг по stepId + strong signals
-   b. Если неоднозначно → LLM разрешение
-   c. Генерировать canonical ID
-   d. Собрать ComponentRecord из всех источников
-   e. Определить preferred selector
-4. Прочитать registry/components.json
-5. Для каждого нового ComponentRecord:
-   a. Если ID уже есть → merge по правилам выше
-   b. Если новый → добавить
-6. Записать обновлённый registry/components.json
-7. Обновить registry/pages.json
-8. Вывести отчёт: добавлено N, обновлено M, конфликтов K
+1. Read all step-NNN.json files → build the anchor index
+2. Read aria-components.json, dom-components.json, network-map.json
+3. For each anchor:
+   a. Deterministic matching by stepId + strong signals
+   b. If ambiguous → LLM resolution
+   c. Generate the canonical ID
+   d. Assemble the ComponentRecord from all sources
+   e. Determine the preferred selector
+4. Read registry/components.json
+5. For each new ComponentRecord:
+   a. If the ID already exists → merge per the rules above
+   b. If new → add it
+6. Write the updated registry/components.json
+7. Update registry/pages.json
+8. Print a report: N added, M updated, K conflicts
 ```
