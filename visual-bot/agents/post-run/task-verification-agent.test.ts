@@ -114,7 +114,7 @@ describe('TaskVerificationAgent.verify — input', () => {
 
     expect(result).toEqual({
       success: false,
-      reason: 'ARIA-снапшот не найден — невозможно проверить результат',
+      reason: 'ARIA snapshot not found — cannot verify the result',
     });
     expect(create).not.toHaveBeenCalled();
   });
@@ -159,7 +159,7 @@ describe('TaskVerificationAgent.verify — disk fallback', () => {
 
     await expect(agent().verify('task')).resolves.toEqual({
       success: false,
-      reason: 'ARIA-снапшот не найден — невозможно проверить результат',
+      reason: 'ARIA snapshot not found — cannot verify the result',
     });
   });
 

@@ -1,30 +1,30 @@
 /**
- * Loop Detector — анализирует переписку с агентом на повторяющиеся шаги.
+ * Loop Detector — scans the agent transcript for repeated steps.
  *
- * Каждые CHECK_EVERY итераций берёт всю историю сообщений и проверяет,
- * не застрял ли агент в петле (одно и то же действие 3+ раз подряд).
+ * Every CHECK_EVERY iterations it takes the whole message history and checks
+ * whether the agent is stuck in a loop (the same action 3+ times in a row).
  */
 
 import type OpenAI from 'openai';
 
 export interface LoopDetectionResult {
   isLoop: boolean;
-  /** Название инструмента, который повторяется */
+  /** Name of the tool being repeated */
   repeatedTool?: string;
-  /** Сколько раз подряд он повторился */
+  /** How many times in a row it repeated */
   repeatCount?: number;
-  /** Краткое описание петли для логирования */
+  /** Short description of the loop, for logging */
   summary?: string;
 }
 
-/** Проверять каждые N итераций */
+/** Run the check every N iterations */
 const CHECK_EVERY = 10;
 
-/** Минимум повторений подряд для считать петлёй */
+/** Minimum consecutive repeats to count as a loop */
 const MIN_REPEATS = 3;
 
 /**
- * Вытаскивает все tool-call записи из истории сообщений по порядку.
+ * Pulls every tool-call record out of the message history, in order.
  */
 function extractToolCalls(
   messages: OpenAI.Chat.ChatCompletionMessageParam[],
@@ -43,9 +43,9 @@ function extractToolCalls(
         // ignore parse errors
       }
 
-      // Нормализуем аргументы в ключ для сравнения.
-      // Для кликов/ховеров — убираем ref (он меняется каждый snapshot),
-      // но оставляем element-описание.
+      // Normalize the arguments into a comparison key. For clicks/hovers the
+      // ref is dropped (it changes with every snapshot) but the element
+      // description is kept.
       const normalizedArgs = normalizeArgs(tc.function.name, args);
       calls.push({ tool: tc.function.name, argsKey: normalizedArgs });
     }
@@ -55,7 +55,7 @@ function extractToolCalls(
 }
 
 /**
- * Нормализует аргументы для сравнения — убирает нестабильные поля (ref).
+ * Normalizes arguments for comparison — strips unstable fields (ref).
  */
 function normalizeArgs(tool: string, args: Record<string, unknown>): string {
   const INTERACTION_TOOLS = new Set([
@@ -66,7 +66,7 @@ function normalizeArgs(tool: string, args: Record<string, unknown>): string {
   ]);
 
   if (INTERACTION_TOOLS.has(tool)) {
-    // ref меняется между snapshot-ами, не сравниваем его
+    // ref changes between snapshots, so it is excluded from the comparison
     const rest = { ...args };
     delete rest.ref;
     return JSON.stringify(rest);
@@ -76,8 +76,8 @@ function normalizeArgs(tool: string, args: Record<string, unknown>): string {
 }
 
 /**
- * Проверяет последние MIN_REPEATS+ tool-call на идентичность.
- * Возвращает результат анализа.
+ * Checks whether the last MIN_REPEATS+ tool calls are identical.
+ * Returns the analysis result.
  */
 function detectLoop(
   calls: Array<{ tool: string; argsKey: string }>,
@@ -106,7 +106,7 @@ function detectLoop(
       isLoop: true,
       repeatedTool: last.tool,
       repeatCount: count,
-      summary: `Агент повторяет "${last.tool}" ${count} раз подряд с одинаковыми аргументами.`,
+      summary: `Agent repeated "${last.tool}" ${count} times in a row with identical arguments.`,
     };
   }
 
@@ -114,8 +114,8 @@ function detectLoop(
 }
 
 /**
- * Вызывать после каждой итерации.
- * Возвращает результат проверки (isLoop=false если ещё рано проверять).
+ * Call after each iteration.
+ * Returns the check result (isLoop=false when it is not yet time to check).
  */
 export function checkForLoop(
   iteration: number,
