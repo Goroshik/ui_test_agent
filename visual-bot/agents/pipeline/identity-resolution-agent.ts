@@ -2,6 +2,8 @@ import OpenAI from 'openai';
 import { readFile, writeFile, mkdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
+import { normalizePagePath } from '../../url-path.js';
+import { upgradePreferred } from '../../selector-quality.js';
 import type {
   StepRecord,
   AriaComponent,
@@ -46,6 +48,35 @@ export function resolveConfidence(a: ConfidenceLevel, b: ConfidenceLevel): Confi
   return max === 2 ? 'high' : max === 1 ? 'medium' : 'low';
 }
 
+export interface LlmResolution {
+  ariaIndex: number | null;
+  domIndex: number | null;
+  confidence: ConfidenceLevel;
+}
+
+const NO_LLM_RESOLUTION: LlmResolution = { ariaIndex: null, domIndex: null, confidence: 'low' };
+
+/** A usable list index, or null — guards against a negative, fractional or non-numeric answer. */
+export function parseIndex(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) return null;
+  return value;
+}
+
+function toConfidence(value: unknown): ConfidenceLevel {
+  const text = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  return text === 'high' || text === 'medium' ? text : 'low';
+}
+
+/**
+ * Strongest of the two reported confidences, capped at "medium": an LLM match is
+ * worth more than nothing but never as much as a deterministic testid/role hit,
+ * which is what "high" means everywhere else in the registry.
+ */
+export function parseLlmConfidence(aria: unknown, dom: unknown): ConfidenceLevel {
+  const best = resolveConfidence(toConfidence(aria), toConfidence(dom));
+  return best === 'high' ? 'medium' : best;
+}
+
 function elField<K extends keyof ActionElement>(
   el: ActionElement | undefined, key: K,
 ): ActionElement[K] | undefined {
@@ -83,6 +114,12 @@ interface DeterministicMatch {
 interface ResolvedMatch {
   aria: AriaComponent | null;
   dom: DomComponent | null;
+  confidence: ConfidenceLevel;
+}
+
+/** The deterministic match, unchanged — what we return when the LLM adds nothing. */
+function asResolved(deterministic: DeterministicMatch): ResolvedMatch {
+  return { aria: deterministic.aria, dom: deterministic.dom, confidence: deterministic.confidence };
 }
 
 interface PreferredSelectorParts {
@@ -257,11 +294,7 @@ export class IdentityResolutionAgent {
    * but never interacted with (e.g. navbar links not clicked).
    */
   private _resolvePagePath(url: string): string {
-    try {
-      return new URL(url.startsWith('http') ? url : `http://x${url}`).pathname;
-    } catch {
-      return url;
-    }
+    return normalizePagePath(url);
   }
 
   private _buildObservedRecord(comp: AriaComponent): ComponentRecord {
@@ -354,15 +387,30 @@ export class IdentityResolutionAgent {
     return { match: null, confidence: 'low' };
   }
 
+  /** Only worth a call when deterministic matching failed and there is something to choose from. */
+  private _shouldAskLlm(candidates: MatchCandidates, deterministic: DeterministicMatch): boolean {
+    const hasCandidates = candidates.stepAria.length > 0 || candidates.stepDom.length > 0;
+    return deterministic.confidence === 'low' && hasCandidates;
+  }
+
+  private _applyLlmResolution(candidates: MatchCandidates, deterministic: DeterministicMatch, llm: LlmResolution): ResolvedMatch {
+    const llmAria = llm.ariaIndex !== null ? candidates.stepAria[llm.ariaIndex] : undefined;
+    const llmDom = llm.domIndex !== null ? candidates.stepDom[llm.domIndex] : undefined;
+    if (!llmAria && !llmDom) return asResolved(deterministic);
+
+    // The LLM found what deterministic matching could not, so its confidence is
+    // what the record deserves — previously this was parsed and thrown away.
+    return {
+      aria: llmAria ?? deterministic.aria,
+      dom: llmDom ?? deterministic.dom,
+      confidence: resolveConfidence(deterministic.confidence, llm.confidence),
+    };
+  }
+
   private async _resolveViaLlmIfAmbiguous(anchor: AnchorEntry, candidates: MatchCandidates, deterministic: DeterministicMatch): Promise<ResolvedMatch> {
-    const { stepAria, stepDom } = candidates;
-    if (deterministic.confidence !== 'low' || (stepAria.length === 0 && stepDom.length === 0)) {
-      return { aria: deterministic.aria, dom: deterministic.dom };
-    }
-    const llmResult = await this._llmResolve(anchor, stepAria, stepDom);
-    const llmAria = llmResult.ariaIndex !== null ? stepAria[llmResult.ariaIndex] : undefined;
-    const llmDom = llmResult.domIndex !== null ? stepDom[llmResult.domIndex] : undefined;
-    return { aria: llmAria ?? deterministic.aria, dom: llmDom ?? deterministic.dom };
+    if (!this._shouldAskLlm(candidates, deterministic)) return asResolved(deterministic);
+    const llm = await this._llmResolve(anchor, candidates.stepAria, candidates.stepDom);
+    return this._applyLlmResolution(candidates, deterministic, llm);
   }
 
   private async _matchAnchor(
@@ -385,7 +433,7 @@ export class IdentityResolutionAgent {
       { aria: ariaResult.match, dom: domResult.match, confidence },
     );
 
-    return { aria: resolved.aria, dom: resolved.dom, network: stepNetwork, confidence };
+    return { aria: resolved.aria, dom: resolved.dom, network: stepNetwork, confidence: resolved.confidence };
   }
 
   private _buildLlmResolvePrompt(
@@ -406,30 +454,31 @@ ${JSON.stringify(domList, null, 2)}
 
 Find which ARIA candidate and which DOM candidate describe the same element as the anchor.
 Rules:
-- If not sure, set confidence to "low"
+- Indexes are 0-based positions in the lists above
 - If no match found, use null for that index
 - Do not guess — null is better than wrong
+- confidence "high" means the candidate is unmistakably the anchor; "low" means a guess
 
 Return JSON (only, no explanation):
 {
   "ariaMatch": { "index": 0, "confidence": "high|medium|low" },
-  "domMatch": { "index": 2, "confidence": "high|medium|low" },
-  "reasoning": "brief reason"
+  "domMatch": { "index": 2, "confidence": "high|medium|low" }
 }`;
   }
 
-  private _parseLlmResolveResponse(text: string): { ariaIndex: number | null; domIndex: number | null } {
+  private _parseLlmResolveResponse(text: string): LlmResolution {
     const match = text.match(/\{[\s\S]*\}/);
-    if (!match) return { ariaIndex: null, domIndex: null };
+    if (!match) return NO_LLM_RESOLUTION;
 
     const parsed = JSON.parse(match[0]) as {
-      ariaMatch?: { index: number; confidence: string };
-      domMatch?: { index: number; confidence: string };
+      ariaMatch?: { index?: unknown; confidence?: unknown };
+      domMatch?: { index?: unknown; confidence?: unknown };
     };
 
     return {
-      ariaIndex: parsed.ariaMatch?.index ?? null,
-      domIndex: parsed.domMatch?.index ?? null,
+      ariaIndex: parseIndex(parsed.ariaMatch?.index),
+      domIndex: parseIndex(parsed.domMatch?.index),
+      confidence: parseLlmConfidence(parsed.ariaMatch?.confidence, parsed.domMatch?.confidence),
     };
   }
 
@@ -437,9 +486,9 @@ Return JSON (only, no explanation):
     anchor: AnchorEntry,
     ariaList: AriaComponent[],
     domList: DomComponent[],
-  ): Promise<{ ariaIndex: number | null; domIndex: number | null }> {
+  ): Promise<LlmResolution> {
     if (ariaList.length === 0 && domList.length === 0) {
-      return { ariaIndex: null, domIndex: null };
+      return NO_LLM_RESOLUTION;
     }
 
     try {
@@ -451,7 +500,7 @@ Return JSON (only, no explanation):
       const text = response.choices[0]?.message?.content ?? '';
       return this._parseLlmResolveResponse(text);
     } catch {
-      return { ariaIndex: null, domIndex: null };
+      return NO_LLM_RESOLUTION;
     }
   }
 
@@ -512,14 +561,17 @@ Return JSON (only, no explanation):
     return RELIABLE_CSS_KINDS.has(domKind) ? domCss : null;
   }
 
-  // Priority: testid > stable CSS from live evaluate > aria-style locator > any CSS > fallback
+  // Priority: testid > stable CSS from live evaluate > aria-style locator > any CSS
   private _resolvePreferredSelector(parts: PreferredSelectorParts): string {
     if (parts.testidSel) return parts.testidSel;
     const reliableCss = this._reliableDomCss(parts.domCss, parts.domKind);
     if (reliableCss) return reliableCss;
     if (parts.aria) return parts.aria;
     if (parts.domCss) return parts.domCss;
-    return `[data-ref="${parts.ref ?? ''}"]`;
+    // No selector rather than a Playwright ref: `[data-ref="e7"]` is a
+    // per-snapshot handle, so it matches nothing in a real browser while looking
+    // like a stable attribute selector. The needs-testid report picks these up.
+    return '';
   }
 
   private _buildSelectors(anchor: AnchorEntry, match: MatchResult): ComponentSelectors {
@@ -562,14 +614,9 @@ Return JSON (only, no explanation):
   }
 
   private _generateId(anchor: AnchorEntry): string {
-    let pageSlug: string;
-    try {
-      const url = new URL(anchor.url.startsWith('http') ? anchor.url : `http://x${anchor.url}`);
-      pageSlug = this._toKebab(url.pathname.replace(/^\//, '') || 'home');
-    } catch {
-      pageSlug = 'page';
-    }
-
+    // Normalised, so the same control on /users/1 and /users/2 gets one ID and
+    // the registry reinforces a single record instead of accruing near-duplicates.
+    const pageSlug = this._toKebab(normalizePagePath(anchor.url).replace(/^\//, '') || 'home');
     const componentSlug = this._resolveComponentSlug(anchor);
     return `${pageSlug}__${componentSlug}`.slice(0, 80);
   }
@@ -592,19 +639,26 @@ Return JSON (only, no explanation):
 
   // ─── Registry merge ───────────────────────────────────────────────────────────
 
+  private _mergeSelectors(existing: ComponentSelectors, incoming: ComponentSelectors): ComponentSelectors {
+    const merged: ComponentSelectors = {
+      preferred: existing.preferred,
+      aria: incoming.aria || existing.aria,
+      testid: existing.testid ?? incoming.testid,
+      css: existing.css ?? incoming.css,
+      xpath: existing.xpath ?? incoming.xpath,
+    };
+    // Recomputed, not carried over: a testid found on a later run has to win, and
+    // a component first seen without one must not stay pinned to its fallback.
+    return { ...merged, preferred: upgradePreferred(merged.preferred, merged) };
+  }
+
   private _mergeRecord(existing: ComponentRecord, newRec: ComponentRecord): ComponentRecord {
     if (existing.manualOverride) return existing;
 
     return {
       ...existing,
       pages: [...new Set([...existing.pages, ...newRec.pages])],
-      selectors: {
-        preferred: existing.selectors.preferred,
-        aria: newRec.selectors.aria || existing.selectors.aria,
-        testid: existing.selectors.testid ?? newRec.selectors.testid,
-        css: existing.selectors.css ?? newRec.selectors.css,
-        xpath: existing.selectors.xpath ?? newRec.selectors.xpath,
-      },
+      selectors: this._mergeSelectors(existing.selectors, newRec.selectors),
       actions: this._mergeActions(existing.actions, newRec.actions),
       states: { ...existing.states, ...newRec.states },
       constraints: newRec.constraints ?? existing.constraints ?? null,
