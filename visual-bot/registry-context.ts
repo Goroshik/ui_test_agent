@@ -1,6 +1,7 @@
 import { readFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { resolve } from 'path';
+import { normalizePagePath } from './url-path.js';
 import type { ComponentRegistry, ComponentRecord } from './pipeline/types.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -112,14 +113,8 @@ export async function getRegistryPages(): Promise<RegistryPageRecord[]> {
 export async function getComponentContextForUrl(url: string): Promise<string | null> {
   const [pages, registry] = await Promise.all([loadPages(), loadRegistry()]);
 
-  let pagePath: string;
-  try {
-    pagePath = new URL(url).pathname;
-  } catch {
-    pagePath = url;
-  }
-
-  const page = pages[pagePath];
+  // Normalised so /users/789 finds what was learned on /users/123.
+  const page = pages[normalizePagePath(url)];
   if (!page || page.components.length === 0) return null;
 
   const parts = page.components
@@ -166,10 +161,8 @@ function _formatComponentForTool(c: ComponentRecord): string {
  * Used by registry_get_page_components tool.
  */
 export async function toolGetPageComponents(pagePath: string): Promise<string> {
-  // Normalize: strip query string / hash, ensure leading slash
-  let path = pagePath.trim();
-  try { path = new URL(path).pathname; } catch { /* already a path */ }
-  if (!path.startsWith('/')) path = '/' + path;
+  // Strips origin/query/hash, adds the leading slash, collapses record ids to :id
+  const path = normalizePagePath(pagePath);
 
   const pages = await loadPages();
   const page = pages[path];

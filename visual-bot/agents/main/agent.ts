@@ -5,56 +5,17 @@ import { MCPClient } from '../../mcp-client.js';
 import { Screenshotter } from '../../screenshotter.js';
 import { resolveModel } from '../../utils.js';
 import { createProvider } from '../../llm-provider.js';
+import { toolSchema, REGISTRY_TOOLS } from '../../tool-catalog.js';
 import { recordVisit, getVisitSummary } from '../../memory.js';
 import { getPageSummary, getComponentContextForUrl, toolGetPageComponents, toolSearchComponents } from '../../registry-context.js';
 import { RunLogger } from '../../run-logger.js';
 import { checkForLoop } from '../../loop-detector.js';
+import { checkActionEffect, withEffectWarning } from '../../action-effect.js';
+import { countPlannedToolCalls, findShortfalls, buildPushbackMessage, type ToolCounts, type TrackedTool } from '../../plan-progress.js';
 import { saveStep } from '../../db.js';
 import { SessionCollector } from '../../pipeline/session-collector.js';
 import type { ActionData, ActionElement, ActionType } from '../../pipeline/types.js';
 
-// Playwright MCP doesn't expose inputSchema via protocol — define them manually
-const TOOL_SCHEMAS: Record<string, OpenAI.FunctionParameters> = {
-  browser_navigate:      { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] },
-  browser_snapshot:      { type: 'object', properties: {} },
-  browser_click:         { type: 'object', properties: { element: { type: 'string' }, ref: { type: 'string' } }, required: ['element', 'ref'] },
-  browser_type:          { type: 'object', properties: { element: { type: 'string' }, ref: { type: 'string' }, text: { type: 'string' }, submit: { type: 'boolean' }, slowly: { type: 'boolean' } }, required: ['element', 'ref', 'text'] },
-  browser_select_option: { type: 'object', properties: { element: { type: 'string' }, ref: { type: 'string' }, values: { type: 'array', items: { type: 'string' } } }, required: ['element', 'ref', 'values'] },
-  browser_press_key:     { type: 'object', properties: { key: { type: 'string' } }, required: ['key'] },
-  browser_hover:         { type: 'object', properties: { element: { type: 'string' }, ref: { type: 'string' } }, required: ['element', 'ref'] },
-  browser_wait_for:      { type: 'object', properties: { time: { type: 'number' }, text: { type: 'string' }, textGone: { type: 'string' } } },
-  browser_take_screenshot: { type: 'object', properties: { raw: { type: 'boolean' } } },
-  browser_navigate_back:    { type: 'object', properties: {} },
-  browser_navigate_forward: { type: 'object', properties: {} },
-  browser_tab_list:      { type: 'object', properties: {} },
-  browser_tab_new:       { type: 'object', properties: { url: { type: 'string' } } },
-  browser_tab_select:    { type: 'object', properties: { index: { type: 'number' } }, required: ['index'] },
-  browser_tab_close:     { type: 'object', properties: { index: { type: 'number' } } },
-  browser_close:         { type: 'object', properties: {} },
-  browser_resize:        { type: 'object', properties: { width: { type: 'number' }, height: { type: 'number' } }, required: ['width', 'height'] },
-  browser_handle_dialog: { type: 'object', properties: { accept: { type: 'boolean' }, promptText: { type: 'string' } }, required: ['accept'] },
-  browser_file_upload:   { type: 'object', properties: { paths: { type: 'array', items: { type: 'string' } } }, required: ['paths'] },
-  browser_network_requests:  { type: 'object', properties: {} },
-  browser_console_messages:  { type: 'object', properties: {} },
-  browser_generate_playwright_test: { type: 'object', properties: { name: { type: 'string' }, description: { type: 'string' }, steps: { type: 'array', items: { type: 'string' } } }, required: ['name', 'description', 'steps'] },
-  // ── Registry tools (handled locally, not via MCP) ──
-  registry_get_page_components: {
-    type: 'object',
-    properties: {
-      page: { type: 'string', description: 'Page path to look up, e.g. /v1/login or /member-hr/home' },
-    },
-    required: ['page'],
-  },
-  registry_search_components: {
-    type: 'object',
-    properties: {
-      query: { type: 'string', description: 'Keyword to search in component labels and IDs' },
-    },
-    required: ['query'],
-  },
-};
-
-const REGISTRY_TOOLS = new Set(['registry_get_page_components', 'registry_search_components']);
 
 const SYSTEM_PROMPT = `You are a browser automation agent. Complete the user's task step by step using the available browser tools.
 
@@ -129,6 +90,14 @@ const ACTION_TYPE_MAP: Record<string, ActionType> = {
   browser_hover: 'hover',
   browser_press_key: 'press_key',
 };
+
+const TRACKED_TOOL_SET: ReadonlySet<string> = new Set<TrackedTool>([
+  'browser_click', 'browser_type', 'browser_select_option', 'browser_navigate', 'browser_hover',
+]);
+
+function isTrackedTool(toolName: string): toolName is TrackedTool {
+  return TRACKED_TOOL_SET.has(toolName);
+}
 
 function extractStringArg(toolArgs: Record<string, unknown>, key: string): string | undefined {
   const value = toolArgs[key];
@@ -228,6 +197,12 @@ export class Agent {
   private lastScreenshotPath: string | null = null;
   // Model advertised by the provider we built ourselves; empty when a client was injected.
   private providerModel = '';
+  // Post-action ARIA snapshot, for telling the model when an action did nothing.
+  private lastPostActionSnapshot: string | null = null;
+  // Plan adherence: what the plan asked for vs what we actually called.
+  private plannedToolCalls: ToolCounts = {};
+  private performedToolCalls: ToolCounts = {};
+  private pushbacksUsed = 0;
 
   constructor(client?: OpenAI, logger?: RunLogger, mongoRunId?: ObjectId, modelOverride?: string) {
     if (client) {
@@ -266,6 +241,7 @@ export class Agent {
   }
 
   async run(prompt: string): Promise<void> {
+    this.plannedToolCalls = countPlannedToolCalls(prompt);
     if (!this.model) this.model = this.providerModel || (await resolveModel(this.client));
     const model = this.model;
 
@@ -307,7 +283,7 @@ export class Agent {
       function: {
         name: tool.name,
         description: tool.description,
-        parameters: TOOL_SCHEMAS[tool.name] ?? { type: 'object', properties: {} },
+        parameters: toolSchema(tool.name),
       },
     }));
     return openaiTools;
@@ -366,14 +342,10 @@ export class Agent {
       }
       console.log(`\n[Step ${iteration}] Thinking...`);
 
-      const message = await this._requestNextMessage(messages, openaiTools, model);
-      messages.push(message);
-      if (message.content) {
-        console.log(`  💭 ${message.content}`);
-      }
-
+      const message = await this._nextTurn(messages, openaiTools, model);
       const toolCalls = this._getToolCalls(message);
       if (!toolCalls) {
+        if (this._pushBackOnUnfinishedPlan(messages)) continue;
         this._logCompletion(message);
         break;
       }
@@ -386,6 +358,16 @@ export class Agent {
         console.log('\nMax iterations reached. Stopping.');
       }
     }
+  }
+
+  /** One model turn: request, record it in the history, echo its narration. */
+  private async _nextTurn(messages: OpenAI.Chat.ChatCompletionMessageParam[], openaiTools: OpenAI.Chat.ChatCompletionTool[], model: string): Promise<OpenAI.Chat.ChatCompletionMessage> {
+    const message = await this._requestNextMessage(messages, openaiTools, model);
+    messages.push(message);
+    if (message.content) {
+      console.log(`  💭 ${message.content}`);
+    }
+    return message;
   }
 
   private async _requestNextMessage(
@@ -413,6 +395,26 @@ export class Agent {
   ): OpenAI.Chat.ChatCompletionMessageToolCall[] | null {
     const toolCalls = message.tool_calls;
     return toolCalls && toolCalls.length > 0 ? toolCalls : null;
+  }
+
+  /**
+   * The loop used to end the moment the model stopped calling tools, so a summary
+   * written after three of eight steps counted as a completed run. Push back once
+   * with the specific gap; a bounded nudge cannot turn into a loop.
+   */
+  private _pushBackOnUnfinishedPlan(messages: OpenAI.Chat.ChatCompletionMessageParam[]): boolean {
+    const maxPushbacks = parseInt(process.env.MAX_PLAN_PUSHBACKS || '1', 10);
+    if (this.pushbacksUsed >= maxPushbacks) return false;
+
+    const shortfalls = findShortfalls(this.plannedToolCalls, this.performedToolCalls);
+    const pushback = buildPushbackMessage(shortfalls);
+    if (!pushback) return false;
+
+    this.pushbacksUsed++;
+    console.log(`\n[PlanCheck] Stopped short of the plan — pushing back (${this.pushbacksUsed}/${maxPushbacks}):`);
+    for (const s of shortfalls) console.log(`  ${s.tool}: planned ${s.planned}, performed ${s.performed}`);
+    messages.push({ role: 'user', content: pushback });
+    return true;
   }
 
   private _logCompletion(message: OpenAI.Chat.ChatCompletionMessage): void {
@@ -519,12 +521,40 @@ export class Agent {
       await this._endCollectorStep(exec.isToolError);
     }
 
-    const screenshotPath = await this._captureAfterToolCall(call, content, flags);
-    await this._persistStep(call, content, screenshotPath, exec);
+    const snapshotBefore = this.lastPostActionSnapshot;
+    const snapshotAfter = await this._readPostActionSnapshot(call, content, flags);
+    if (snapshotAfter) this.lastPostActionSnapshot = snapshotAfter;
 
-    messages.push({ role: 'tool', tool_call_id: call.id, content: content || 'OK' });
+    const screenshotPath = await this._captureArtifacts(call, snapshotAfter, flags);
+    await this._persistStep(call, content, screenshotPath, exec);
+    this._countPerformedCall(call.name);
+
+    const warning = this._describeActionEffect(call, exec, snapshotBefore, snapshotAfter);
+    messages.push({ role: 'tool', tool_call_id: call.id, content: withEffectWarning(content || 'OK', warning) });
 
     await this._injectPostNavigationContext(call, exec.isToolError, messages);
+  }
+
+  /**
+   * Playwright MCP reports a click on a disabled button as a success, so without
+   * this the model builds on steps that never landed — which reads as it having
+   * forgotten to press the button at all.
+   */
+  private _describeActionEffect(call: ParsedToolCall, exec: McpExecResult, snapshotBefore: string | null, snapshotAfter: string): string {
+    if (exec.isToolError) return '';
+    const warning = checkActionEffect({
+      toolName: call.name,
+      toolArgs: call.args,
+      snapshotBefore,
+      snapshotAfter,
+    });
+    if (warning) console.log(`    ⚠️  ${call.name} left the page unchanged — told the model`);
+    return warning;
+  }
+
+  private _countPerformedCall(toolName: string): void {
+    if (!isTrackedTool(toolName)) return;
+    this.performedToolCalls[toolName] = (this.performedToolCalls[toolName] ?? 0) + 1;
   }
 
   private _shouldTrackStep(toolName: string): boolean {
@@ -570,19 +600,27 @@ export class Agent {
     }
   }
 
-  private async _captureAfterToolCall(
-    call: ParsedToolCall,
-    content: string,
-    flags: RunFlags,
-  ): Promise<string | undefined> {
+  /**
+   * The post-action snapshot is needed to tell whether the action landed, so it
+   * must not depend on the artifact flags: with screenshots and snapshots both
+   * off there was nothing to compare and every effect check silently passed.
+   */
+  private _needsPostActionSnapshot(flags: RunFlags): boolean {
+    if (flags.screenshotsEnabled || flags.snapshotsEnabled) return true;
+    return process.env.ACTION_EFFECT_CHECK_ENABLED !== 'false';
+  }
+
+  private async _readPostActionSnapshot(call: ParsedToolCall, content: string, flags: RunFlags): Promise<string> {
+    if (call.name === 'browser_snapshot') return content;
+    if (!this._needsPostActionSnapshot(flags)) return '';
+    return this._extractTextContent(await this.mcp.snapshot());
+  }
+
+  private async _captureArtifacts(call: ParsedToolCall, snapshotText: string, flags: RunFlags): Promise<string | undefined> {
     if (!flags.screenshotsEnabled && !flags.snapshotsEnabled) {
       await this._recordNavigateVisitIfApplicable(call);
       return undefined;
     }
-
-    const snapshotText = call.name === 'browser_snapshot'
-      ? content
-      : this._extractTextContent(await this.mcp.snapshot());
     if (!snapshotText) return undefined;
 
     const isInteraction = INTERACTION_TOOLS.has(call.name);

@@ -2,23 +2,22 @@ import OpenAI from 'openai';
 import { resolveModel } from '../../utils.js';
 import { getVisitSummary } from '../../memory.js';
 import { getPageSummary } from '../../registry-context.js';
+import { formatToolCatalogForPlanner } from '../../tool-catalog.js';
 
 const PLANNER_SYSTEM_PROMPT = `You are a browser task planner. Your job is to analyze the user's goal and produce a precise, step-by-step execution plan for a browser automation agent.
 
 IMPORTANT: Always respond in Russian. All step descriptions and comments must be in Russian.
 
-## Available browser tools
-- browser_navigate(url) — navigate to a URL
-- browser_snapshot() — get the current page accessibility tree (ALWAYS call before any interaction)
-- browser_click(element, ref) — click an element by ref from snapshot
-- browser_type(element, ref, text, submit?, slowly?) — type text into an input
-- browser_select_option(element, ref, values) — pick a dropdown option
-- browser_press_key(key) — press a keyboard key
-- browser_hover(element, ref) — hover over an element
-- browser_wait_for(text?, textGone?, time?) — wait for condition
-- browser_take_screenshot() — capture a screenshot
-- browser_navigate_back() / browser_navigate_forward() — browser history
-- browser_tab_new(url?) / browser_tab_select(index) / browser_tab_close() — tab management
+## Tools the agent can call
+${formatToolCatalogForPlanner()}
+
+## Use what previous runs already learned
+When the site knowledge below names a page relevant to the task, plan a
+registry_get_page_components step for it before interacting — it returns the
+selectors and assertions already recorded, so the agent does not rediscover the
+page. When you know the control but not its page, plan registry_search_components.
+Site knowledge paths are normalised: ":id" stands for any record identifier, so
+/users/:id means "any user page" and the agent must substitute a real id.
 
 ## Output format
 Return ONLY the execution plan as plain text — no JSON, no markdown fences.
@@ -26,9 +25,10 @@ Structure it as numbered steps. Each step must be one concrete action, for examp
 
 1. Navigate to https://example.com
 2. Call browser_snapshot to inspect the page
-3. Find the "Login" button in the snapshot and click it
-4. Type "user@example.com" into the email field
-5. Take a screenshot to confirm the login form is visible
+3. Call registry_get_page_components("/v1/login") to reuse known selectors
+4. Find the "Login" button in the snapshot and click it
+5. Type "user@example.com" into the email field
+6. Call browser_snapshot to confirm the login form submitted
 
 Rules:
 - Be specific about URLs (include full https:// URL)
@@ -36,7 +36,9 @@ Rules:
 - If the task involves multiple pages, list them in order
 - If credentials or data are needed and not provided, note them as [PLACEHOLDER]
 - Keep steps granular — one action per step
-- End with a step to take a final screenshot and summarize what was verified`;
+- End with a step to call browser_snapshot and summarize what was verified. Do not
+  plan a screenshot for verification: the agent and the verifier both read the
+  accessibility snapshot, and screenshots may be disabled entirely.`;
 
 export class PlannerAgent {
   private client: OpenAI;
@@ -48,9 +50,18 @@ export class PlannerAgent {
     this.modelOverride = modelOverride;
   }
 
+  /**
+   * All three sources, each labelled — not the first non-empty one. The old
+   * `analysis || pages || visits` chain meant a successful memory analysis threw
+   * away the page/component summary the planner needs to name a registry lookup.
+   */
   private async _resolveContext(memoryContext?: string): Promise<string> {
-    // Priority: rich analysis → known pages summary → basic URL list
-    return memoryContext || await getPageSummary() || await getVisitSummary();
+    const [pageSummary, visitSummary] = await Promise.all([getPageSummary(), getVisitSummary()]);
+    return [
+      memoryContext ? `### Navigation analysis\n${memoryContext}` : '',
+      pageSummary ? `### Known pages and their components\n${pageSummary}` : '',
+      visitSummary ? `### Visit history\n${visitSummary}` : '',
+    ].filter((part) => part !== '').join('\n\n');
   }
 
   private _buildUserMessage(userTask: string, context: string): string {

@@ -6,6 +6,7 @@ import { DomAnalyzerAgent } from './dom-analyzer-agent.js';
 import { NetworkAnalyzerAgent } from './network-analyzer-agent.js';
 import { IdentityResolutionAgent } from './identity-resolution-agent.js';
 import { NeedsTestIdReportAgent } from './needs-testid-report-agent.js';
+import { invalidateRegistryCache } from '../../registry-context.js';
 import type { SessionMeta } from '../../pipeline/types.js';
 
 /**
@@ -49,6 +50,10 @@ export class PipelineRunner {
 
     // Step 5: identity resolution (needs all analyzed files)
     await this.identityAgent.run(sessionDir, dataDir);
+
+    // The registry on disk just changed; drop the memo so anything reading it in
+    // this process — the report agent, or an agent still running — sees the update.
+    invalidateRegistryCache();
 
     // Step 6: classify registry → write needs-testid report
     await this.reportAgent.run(dataDir);

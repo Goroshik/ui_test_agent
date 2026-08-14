@@ -72,11 +72,29 @@ when no role uses it.
 
 ## Usage
 
+The pipeline is three steps. Run one, or run them back to back:
+
 ```bash
-node index.js "go to github.com and explore the navigation"
-node index.js "search for 'playwright' on npmjs.com and open the first result"
-node index.js "go to news.ycombinator.com and list the top 5 stories"
+npx tsx visual-bot/run.ts crawl "log in and open the team page"   # 1. browse + record
+npx tsx visual-bot/run.ts analyze                                # 2. build the registry
+npx tsx visual-bot/run.ts generate                               # 3. write Cypress tests
+npx tsx visual-bot/run.ts all "log in and open the team page"     # all three, in order
 ```
+
+| Step | Reads | Writes |
+|---|---|---|
+| `crawl` | task prompt + `data/registry/` (site knowledge from past runs) | `data/sessions/<id>/`, `data/memory.json`, screenshots |
+| `analyze` | `data/sessions/` | `data/registry/components.json`, `pages.json`, needs-testid report |
+| `generate` | `data/registry/` | `cypress-tests/cypress/e2e/`, selectors, fixtures |
+
+Each step is a separate process, so they are independently re-runnable: re-analyze
+without re-crawling, regenerate without re-analyzing. `analyze` takes the most
+recent session by default — pass `--session <id>` (or a positional id) for another.
+
+If `all` fails partway, everything the earlier steps produced is already on disk;
+fix the cause and re-run from the step that failed.
+
+`yarn start` still runs crawl + analyze together as before, for compatibility.
 
 Run snapshot comparison as a standalone agent:
 
@@ -204,7 +222,11 @@ npx tsx visual-bot/run-pipeline.ts [sessionId]
 visual-bot/
 ├── index.ts                  — точка входа, оркестратор
 ├── run-pipeline.ts           — standalone запуск анализа для сохранённой сессии
+├── run.ts                    — CLI: crawl / analyze / generate / all
+├── steps.ts                  — что запускать на каждом шаге (чистый модуль)
 ├── llm-provider.ts           — выбор провайдера и модели по роли (OpenRouter / Ollama)
+├── tool-catalog.ts           — единый источник: имена тулов, схемы и описания для промптов
+├── url-path.ts               — нормализация путей (:id вместо идентификаторов записей)
 ├── ollama-model-manager.ts   — управление локальной моделью в Ollama (load/unload)
 ├── visual-diff.ts            — сравнение скриншотов через LLM
 ├── visual-text-diff.ts       — сравнение ARIA-снапшотов через LLM
